@@ -205,6 +205,7 @@ export default function PublicDashboard() {
   const [teams, setTeams] = useState([]);
   const [buzzActivity, setBuzzActivity] = useState([]);
   const [heatmap, setHeatmap] = useState({});
+  const [tournament, setTournament] = useState(null);
   const socketRef = useRef(null);
 
   useEffect(() => {
@@ -232,6 +233,42 @@ export default function PublicDashboard() {
       setTeams(sorted.slice(0, 5)); // Top 5
     });
 
+    const syncTournament = (data) => {
+      setTournament(data);
+      if (data?.phase2?.scores?.length) {
+        setTeams(data.phase2.scores.slice(0, 5));
+      }
+      if (data?.phase2?.currentChallenge) {
+        setCurrentQuestion({
+          id: data.phase2.currentChallenge.id,
+          text: data.phase2.currentChallenge.question,
+          category: data.phase2.currentChallenge.category,
+          points: data.phase2.currentChallenge.points,
+          difficulty: data.phase2.currentChallenge.difficulty,
+          timeLimit: data.phase2.currentChallenge.timeLimit
+        });
+      } else {
+        setCurrentQuestion(null);
+      }
+    };
+
+    socket.on('tournament:state', syncTournament);
+    socket.on('tournament:phase1_complete', syncTournament);
+    socket.on('tournament:phase2_started', syncTournament);
+    socket.on('phase2:challenge_started', syncTournament);
+    socket.on('phase2:submission_update', syncTournament);
+    socket.on('phase2:round_winner', syncTournament);
+    socket.on('phase2:hint_usage_update', syncTournament);
+    socket.on('phase2:round_ended', syncTournament);
+    socket.on('phase2:round_timeout', syncTournament);
+    socket.on('phase2:round_skipped', syncTournament);
+    socket.on('phase2:team_eliminated', syncTournament);
+    socket.on('tournament:phase2_complete', syncTournament);
+    socket.on('tournament:dev_phase2_started', syncTournament);
+    socket.on('tournament:dev_phase3_started', syncTournament);
+    socket.on('tournament:dev_state_updated', syncTournament);
+    socket.on('tournament:dev_reset', syncTournament);
+
     socket.on('buzz:first', (data) => {
       setBuzzActivity(prev => [{
         id: Date.now(),
@@ -253,6 +290,20 @@ export default function PublicDashboard() {
     medium: ['qtag-med', 'Moyen'],
     hard: ['qtag-hard', 'Difficile']
   };
+  const phaseLabel = tournament?.phase === 'phase2'
+    ? 'PHASE 2 · ELIMINATION CSV'
+    : tournament?.phase === 'phase3'
+      ? 'LA GRANDE FINALE'
+    : tournament?.phase === 'phase2_complete'
+      ? 'PHASE 2 TERMINEE'
+      : tournament?.phase === 'phase1_complete'
+        ? 'PHASE 1 TERMINEE'
+        : 'PHASE 1 · QUALIFICATION';
+  const eliminatedTeams = tournament?.phase2?.eliminatedTeams || tournament?.phase1?.eliminated || [];
+  const submissions = tournament?.phase2?.submissions || [];
+  const finalScores = tournament?.phase3?.scores || [];
+  const penaltyEvents = tournament?.phase2?.monitoring?.penaltyEvents || [];
+  const hintUsageLog = tournament?.phase2?.monitoring?.hintUsageLog || [];
 
   return (
     <>
@@ -273,7 +324,7 @@ export default function PublicDashboard() {
               </div>
               <div>
                 <p className="brand-name">Crazy Challenge</p>
-                <p className="brand-sub">Tableau public</p>
+                <p className="brand-sub">{phaseLabel}</p>
               </div>
             </div>
             <div className="live-badge">
@@ -295,16 +346,46 @@ export default function PublicDashboard() {
                 </div>
                 <p className="q-text">{currentQuestion.text}</p>
                 <div className="q-timer">
-                  <div className="timer-circle">⏱️</div>
+                  <div className="timer-circle">T</div>
                   <div>
                     <p style={{ fontWeight: 600 }}>Temps restant</p>
-                    <p className="timer-label">Compte à rebours en cours...</p>
+                    <p className="timer-label">
+                      {tournament?.phase2?.timer !== undefined
+                        ? `${tournament.phase2.timer}s · Round ${tournament.phase2.roundNumber}`
+                        : 'Compte à rebours en cours...'}
+                    </p>
                   </div>
+                </div>
+                {tournament?.phase2?.roundWinner && (
+                  <div className="buzz-item" style={{ marginTop: '1rem', background: 'rgba(34,197,94,0.12)' }}>
+                    <span className="buzz-dot" style={{ background: 'var(--green)' }} />
+                    <span style={{ flex: 1 }}>
+                      {tournament.phase2.roundWinner.teamName} gagne le round
+                    </span>
+                    <span style={{ color: 'var(--gold)' }}>+{tournament.phase2.roundWinner.points}</span>
+                  </div>
+                )}
+              </div>
+            ) : tournament?.phase === 'phase3' ? (
+              <div className="gc gc-cyan q-card">
+                <div className="q-header">
+                  <span className="qtag qtag-cat">Grande Finale</span>
+                  <span className="qtag qtag-pts">2 Finalistes</span>
+                </div>
+                <p className="q-text">Le duel final est prêt. Les deux meilleures équipes entrent en scène.</p>
+                <div className="lb-list" style={{ marginTop: '1.25rem' }}>
+                  {finalScores.map((team) => (
+                    <div key={team.id} className="lb-item">
+                      <div className="lb-rank">#{team.rank}</div>
+                      <span className="lb-name">{team.name}</span>
+                      <span className="lb-score">{team.score}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             ) : (
               <div className="gc" style={{ padding: '2rem', textAlign: 'center' }}>
-                <p className="empty">⏳ En attente d'une question...</p>
+                <p className="empty">En attente d'une question...</p>
               </div>
             )}
           </div>
@@ -319,6 +400,9 @@ export default function PublicDashboard() {
                 </svg>
                 Classement
               </h3>
+              <p style={{ color: 'var(--muted)', fontSize: '0.76rem', marginBottom: '0.75rem' }}>
+                Restants: {tournament?.phase2?.qualifiedTeams?.length ?? teams.length} · Eliminés: {eliminatedTeams.length}
+              </p>
               {teams.length === 0 ? (
                 <p className="empty">En attente des équipes...</p>
               ) : (
@@ -326,7 +410,7 @@ export default function PublicDashboard() {
                   {teams.map((team, i) => (
                     <div key={team.id || i} className="lb-item">
                       <div className={`lb-rank ${i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : ''}`}>
-                        {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`}
+                        #{i + 1}
                       </div>
                       <span className="lb-name">{team.name || `Équipe ${team.id}`}</span>
                       <span className="lb-score">{team.score}</span>
@@ -344,15 +428,74 @@ export default function PublicDashboard() {
                 </svg>
                 Buzz récents
               </h3>
-              {buzzActivity.length === 0 ? (
+              {buzzActivity.length === 0 && submissions.length === 0 ? (
                 <p className="empty">Aucun buzz pour l'instant...</p>
               ) : (
                 <div className="buzz-list">
+                  {submissions.slice(0, 8).map((submission) => (
+                    <div key={submission.id} className="buzz-item" style={{ background: submission.correct ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.08)' }}>
+                      <span className="buzz-dot" style={{ background: submission.correct ? 'var(--green)' : 'var(--red)' }} />
+                      <span style={{ flex: 1 }}>{submission.teamName}</span>
+                      <span style={{ color: 'var(--muted)', fontSize: '0.7rem' }}>
+                        {submission.correct ? `+${submission.points}` : submission.penalty}
+                      </span>
+                    </div>
+                  ))}
                   {buzzActivity.map((buzz) => (
                     <div key={buzz.id} className="buzz-item">
                       <span className="buzz-dot" />
                       <span style={{ flex: 1 }}>{buzz.teamName}</span>
                       <span style={{ color: 'var(--muted)', fontSize: '0.7rem' }}>{buzz.time}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="gc gc-indigo panel">
+              <h3 className="panel-title">
+                <svg width="16" height="16" fill="none" stroke="#a5b4fc" strokeWidth="2" viewBox="0 0 24 24">
+                  <path d="M12 3v18M6 9l6-6 6 6M6 15l6 6 6-6"/>
+                </svg>
+                Pression du round
+              </h3>
+              <div className="buzz-list">
+                {penaltyEvents.slice(0, 4).map((entry) => (
+                  <div key={entry.id} className="buzz-item">
+                    <span className="buzz-dot" style={{ background: 'var(--red)' }} />
+                    <span style={{ flex: 1 }}>{entry.teamName}</span>
+                    <span style={{ color: 'var(--muted)', fontSize: '0.7rem' }}>{entry.penalty}</span>
+                  </div>
+                ))}
+                {hintUsageLog.slice(0, 4).map((entry) => (
+                  <div key={entry.id} className="buzz-item">
+                    <span className="buzz-dot" style={{ background: 'var(--cyan)' }} />
+                    <span style={{ flex: 1 }}>{entry.teamName}</span>
+                    <span style={{ color: 'var(--muted)', fontSize: '0.7rem' }}>Indice</span>
+                  </div>
+                ))}
+                {penaltyEvents.length === 0 && hintUsageLog.length === 0 && (
+                  <p className="empty">Aucune pénalité ni indice.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="gc gc-indigo panel">
+              <h3 className="panel-title">
+                <svg width="16" height="16" fill="none" stroke="#a5b4fc" strokeWidth="2" viewBox="0 0 24 24">
+                  <path d="M18 6L6 18M6 6l12 12"/>
+                </svg>
+                Équipes éliminées
+              </h3>
+              {eliminatedTeams.length === 0 ? (
+                <p className="empty">Aucune élimination...</p>
+              ) : (
+                <div className="lb-list">
+                  {eliminatedTeams.map((team, i) => (
+                    <div key={`${team.id}-${i}`} className="lb-item" style={{ filter: 'grayscale(1)', opacity: 0.58 }}>
+                      <div className="lb-rank">#{team.rank || i + 1}</div>
+                      <span className="lb-name">{team.name}</span>
+                      <span className="lb-score">{team.score}</span>
                     </div>
                   ))}
                 </div>
@@ -381,8 +524,8 @@ export default function PublicDashboard() {
                         <div className="hm-bar wrong" style={{ height: `${Math.min(60, stats.wrong * 10)}px` }} />
                       </div>
                       <div className="hm-stats">
-                        <span className="hm-correct">✓ {stats.correct}</span>
-                        <span className="hm-wrong">✗ {stats.wrong}</span>
+                        <span className="hm-correct">Correct {stats.correct}</span>
+                        <span className="hm-wrong">Wrong {stats.wrong}</span>
                       </div>
                     </div>
                   ))}

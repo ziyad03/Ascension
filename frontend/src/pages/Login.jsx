@@ -322,6 +322,7 @@ export default function Login() {
         localStorage.setItem('token', res.data.token);
         localStorage.setItem('role', res.data.role);
         localStorage.setItem('teamId', res.data.teamId);
+        localStorage.setItem('username', username);
         const routes = { team: '/team', moderator: '/moderator', jury: '/jury', public: '/public' };
         navigate(routes[res.data.role] || '/');
       } else {
@@ -347,7 +348,6 @@ export default function Login() {
           <span className="auth-corner-dot" style={{ bottom: 14, right: 14 }} />
 
           <div className="auth-badge">
-            <span>🎮</span>
             {isRegister ? 'Nouvelle équipe' : 'Espace joueur'}
           </div>
 

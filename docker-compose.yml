@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: crazy-challenge-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crazy
+      POSTGRES_PASSWORD: crazy_password
+      POSTGRES_DB: crazy_challenge
+    ports:
+      - "5433:5432"
+    volumes:
+      - crazy_challenge_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crazy -d crazy_challenge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  crazy_challenge_postgres_data:

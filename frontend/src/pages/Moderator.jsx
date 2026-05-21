@@ -604,7 +604,198 @@ const styles = `
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: rgba(99,102,241,0.3); border-radius: 4px; }
+
+  .p2-panel {
+    padding: 1.1rem 1.25rem;
+    display: grid;
+    gap: 1rem;
+    border-color: rgba(239,68,68,0.24);
+    background:
+      radial-gradient(ellipse 70% 90% at 100% 0%, rgba(239,68,68,0.08), transparent),
+      rgba(8,14,28,0.88);
+  }
+
+  .p2-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .p2-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 0.98rem;
+    font-weight: 800;
+    color: #f8fafc;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .p2-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.85rem;
+  }
+
+  @media (max-width: 860px) { .p2-grid { grid-template-columns: 1fr; } }
+
+  .p2-box {
+    border: 1px solid rgba(255,255,255,0.07);
+    background: rgba(255,255,255,0.03);
+    border-radius: 14px;
+    padding: 0.95rem;
+    display: grid;
+    gap: 0.7rem;
+  }
+
+  .p2-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .p2-mini {
+    min-height: 38px;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 10px;
+    padding: 0 12px;
+    background: rgba(255,255,255,0.05);
+    color: #e2e8f0;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.76rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .p2-mini.red { background: rgba(239,68,68,0.14); border-color: rgba(239,68,68,0.28); color: #fecaca; }
+  .p2-mini.green { background: rgba(34,197,94,0.13); border-color: rgba(34,197,94,0.27); color: #bbf7d0; }
+  .p2-mini.gold { background: rgba(251,191,36,0.12); border-color: rgba(251,191,36,0.26); color: #fde68a; }
+  .p2-mini:disabled { opacity: 0.42; cursor: not-allowed; }
+
+  .dev-panel {
+    padding: 1rem 1.15rem;
+    border-color: rgba(6,182,212,0.22);
+    background:
+      radial-gradient(ellipse 80% 100% at 0% 0%, rgba(6,182,212,0.08), transparent),
+      rgba(8,14,28,0.92);
+    display: grid;
+    gap: 0.9rem;
+  }
+
+  .dev-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .dev-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 0.92rem;
+    font-weight: 800;
+    color: #f8fafc;
+  }
+
+  .dev-sub {
+    color: rgba(148,163,184,0.7);
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .dev-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+
+  @media (max-width: 900px) { .dev-grid { grid-template-columns: 1fr; } }
+
+  .dev-box {
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 13px;
+    background: rgba(255,255,255,0.03);
+    padding: 0.85rem;
+    display: grid;
+    gap: 0.6rem;
+  }
+
+  .dev-box-title {
+    font-size: 0.78rem;
+    color: #67e8f9;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+
+  .dev-target {
+    min-height: 38px;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(2,6,23,0.7);
+    color: #e2e8f0;
+    padding: 0 10px;
+    font-family: 'DM Sans', sans-serif;
+  }
+
+  .dev-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    border-radius: 999px;
+    border: 1px solid rgba(6,182,212,0.28);
+    padding: 6px 12px;
+    color: #67e8f9;
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .p2-file {
+    width: 100%;
+    color: rgba(226,232,240,0.72);
+    font-size: 0.78rem;
+  }
+
+  .p2-list {
+    display: grid;
+    gap: 0.5rem;
+    max-height: 230px;
+    overflow-y: auto;
+  }
+
+  .p2-challenge {
+    width: 100%;
+    text-align: left;
+    border: 1px solid rgba(255,255,255,0.07);
+    background: rgba(15,23,42,0.7);
+    color: #e2e8f0;
+    border-radius: 11px;
+    padding: 0.75rem;
+    cursor: pointer;
+  }
+
+  .p2-challenge.active {
+    border-color: rgba(239,68,68,0.44);
+    box-shadow: 0 0 18px rgba(239,68,68,0.1);
+  }
+
+  .p2-challenge strong {
+    display: block;
+    font-size: 0.82rem;
+    margin-bottom: 4px;
+  }
+
+  .p2-muted {
+    color: rgba(148,163,184,0.68);
+    font-size: 0.72rem;
+  }
 `;
+
+const API_BASE = import.meta.env.VITE_BACKEND_URL || 'http://localhost:10000';
 
 /* ─────────────────────────────────────────────────────────────────
    CIRCULAR TIMER
@@ -656,12 +847,23 @@ export default function Moderator() {
   const [teams,           setTeams]           = useState([]);
   const [timer,           setTimer]           = useState(30);
   const [maxTimer,        setMaxTimer]        = useState(30);
+  const [tournament,      setTournament]      = useState(null);
+  const [packs,           setPacks]           = useState([]);
+  const [csvFile,         setCsvFile]         = useState(null);
+  const [csvPreview,      setCsvPreview]      = useState(null);
+  const [selectedChallenge, setSelectedChallenge] = useState(null);
+  const [challengeDraft,  setChallengeDraft]  = useState(null);
+  const [editStatus,      setEditStatus]      = useState('');
+  const [devStatus,       setDevStatus]       = useState({ enabled: false, panel: false });
+  const [devPanelOpen,    setDevPanelOpen]    = useState(() => localStorage.getItem('crazy:dev-panel') === '1');
+  const [devTeamTarget,   setDevTeamTarget]   = useState('');
+  const [manualEliminationTarget, setManualEliminationTarget] = useState('');
 
   const socketRef = useRef(null);
 
   /* ── Socket ── */
   useEffect(() => {
-    const socket = io(import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000');
+    const socket = io(API_BASE);
     socketRef.current = socket;
 
     socket.emit('join', { room: 'session-1',         role: 'moderator' });
@@ -669,14 +871,59 @@ export default function Moderator() {
 
     socket.on('game:answer_received', (data) => setAnswers(prev => [...prev, data]));
     socket.on('score:refresh', (data) => setTeams(data.teams || []));
+    socket.on('tournament:state', setTournament);
+    socket.on('tournament:phase1_complete', setTournament);
+    socket.on('tournament:phase2_started', setTournament);
+    socket.on('phase2:challenge_started', setTournament);
+    socket.on('phase2:submission_update', setTournament);
+    socket.on('phase2:round_winner', setTournament);
+    socket.on('phase2:hint_usage_update', setTournament);
+    socket.on('phase2:pause_update', setTournament);
+    socket.on('phase2:round_ended', setTournament);
+    socket.on('phase2:round_timeout', setTournament);
+    socket.on('phase2:round_skipped', setTournament);
+    socket.on('phase2:team_eliminated', setTournament);
+    socket.on('tournament:phase2_complete', setTournament);
+    socket.on('tournament:dev_phase2_started', setTournament);
+    socket.on('tournament:dev_phase3_started', setTournament);
+    socket.on('tournament:dev_state_updated', setTournament);
+    socket.on('tournament:dev_reset', setTournament);
 
-    fetch(`${import.meta.env.VITE_BACKEND_URL}/api/questions`)
+    fetch(`${API_BASE}/api/questions`)
       .then(r => r.json())
       .then(setQuestions)
       .catch(() => {});
 
+    fetch(`${API_BASE}/api/phase2/packs`)
+      .then(r => r.json())
+      .then(setPacks)
+      .catch(() => {});
+
+    fetch(`${API_BASE}/api/tournament/dev/status`)
+      .then(r => r.json())
+      .then(setDevStatus)
+      .catch(() => {});
+
     return () => socket.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (!devStatus.enabled) return undefined;
+
+    const onKeyDown = (event) => {
+      if (event.ctrlKey && event.altKey && event.key.toLowerCase() === 'm') {
+        event.preventDefault();
+        setDevPanelOpen(prev => {
+          const next = !prev;
+          localStorage.setItem('crazy:dev-panel', next ? '1' : '0');
+          return next;
+        });
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [devStatus.enabled]);
 
   /* ── Timer ── */
   useEffect(() => {
@@ -713,28 +960,150 @@ export default function Moderator() {
     setMaxTimer(m => m + s);
   };
 
+  const previewCsv = async () => {
+    if (!csvFile) return;
+    const formData = new FormData();
+    formData.append('file', csvFile);
+    const res = await fetch(`${API_BASE}/api/phase2/packs/preview`, { method: 'POST', body: formData });
+    setCsvPreview(await res.json());
+  };
+
+  const importCsv = async () => {
+    if (!csvFile) return;
+    const formData = new FormData();
+    formData.append('file', csvFile);
+    formData.append('name', csvFile.name.replace(/\.csv$/i, ''));
+    const res = await fetch(`${API_BASE}/api/phase2/packs/import`, { method: 'POST', body: formData });
+    const data = await res.json();
+    if (res.ok) {
+      setPacks(prev => [data.pack, ...prev]);
+      setCsvPreview(null);
+    } else {
+      setCsvPreview(data);
+    }
+  };
+
+  const saveChallengeEdit = async () => {
+    if (!challengeDraft?.id || !challengeDraft?.packId) return;
+
+    const res = await fetch(`${API_BASE}/api/phase2/packs/${challengeDraft.packId}/challenges/${challengeDraft.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(challengeDraft)
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      setEditStatus(data.error || 'Erreur mise à jour');
+      return;
+    }
+
+    setEditStatus('Challenge mis à jour');
+    setPacks(prev => prev.map(pack => ({
+      ...pack,
+      challenges: (pack.challenges || []).map(challenge => challenge.id === data.challenge.id ? data.challenge : challenge)
+    })));
+    setSelectedChallenge(data.challenge);
+    setChallengeDraft({
+      id: data.challenge.id,
+      packId: data.challenge.packId,
+      question: data.challenge.question || '',
+      answer: data.challenge.answer || '',
+      hint: data.challenge.hint || '',
+      category: data.challenge.category || '',
+      difficulty: data.challenge.difficulty || 'Medium',
+      points: data.challenge.points ?? 10,
+      penalty: data.challenge.penalty ?? -1,
+      timeLimit: data.challenge.timeLimit ?? 30
+    });
+  };
+
+  const regenerateDraftHint = async () => {
+    if (!challengeDraft?.id || !challengeDraft?.packId) return;
+
+    const res = await fetch(`${API_BASE}/api/phase2/packs/${challengeDraft.packId}/challenges/${challengeDraft.id}/regenerate-hint`, {
+      method: 'POST'
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      setEditStatus(data.error || 'Erreur génération indice');
+      return;
+    }
+
+    setChallengeDraft(prev => prev ? ({ ...prev, hint: data.hint }) : prev);
+    setPacks(prev => prev.map(pack => ({
+      ...pack,
+      challenges: (pack.challenges || []).map(challenge => challenge.id === data.challenge.id ? data.challenge : challenge)
+    })));
+    setSelectedChallenge(data.challenge);
+    setChallengeDraft({
+      id: data.challenge.id,
+      packId: data.challenge.packId,
+      question: data.challenge.question || '',
+      answer: data.challenge.answer || '',
+      hint: data.challenge.hint || '',
+      category: data.challenge.category || '',
+      difficulty: data.challenge.difficulty || 'Medium',
+      points: data.challenge.points ?? 10,
+      penalty: data.challenge.penalty ?? -1,
+      timeLimit: data.challenge.timeLimit ?? 30
+    });
+    setEditStatus('Indice régénéré');
+  };
+
+  const endPhase1 = () => socketRef.current?.emit('phase1:end');
+  const skipPhase1 = () => socketRef.current?.emit('phase1:skip');
+  const skipPhase3 = () => socketRef.current?.emit('dev:skip_phase3');
+  const generateMockRankings = () => socketRef.current?.emit('dev:generate_mock_rankings');
+  const resetTournament = () => socketRef.current?.emit('dev:reset_tournament');
+  const simulateScores = () => socketRef.current?.emit('dev:simulate_scores');
+  const forceQualification = () => devTeamTarget && socketRef.current?.emit('dev:force_qualification', { teamId: devTeamTarget });
+  const forceElimination = () => devTeamTarget && socketRef.current?.emit('dev:force_elimination', { teamId: devTeamTarget });
+  const startPhase2 = () => socketRef.current?.emit('phase2:start');
+  const startPhase2Challenge = () => {
+    if (!selectedChallenge) return;
+    socketRef.current?.emit('phase2:start_challenge', { challengeId: selectedChallenge.id });
+  };
+  const pausePhase2 = () => socketRef.current?.emit('phase2:pause', { paused: !tournament?.phase2?.paused });
+  const endRound = () => socketRef.current?.emit('phase2:end_round');
+  const skipChallenge = () => socketRef.current?.emit('phase2:skip_challenge');
+  const forceNextRound = () => socketRef.current?.emit('phase2:force_next_round');
+  const revealHint = () => socketRef.current?.emit('phase2:reveal_hint');
+  const regenerateHint = () => socketRef.current?.emit('phase2:regenerate_hint');
+  const revealAnswer = () => socketRef.current?.emit('phase2:reveal_answer');
+  const manualEliminate = () => manualEliminationTarget && socketRef.current?.emit('phase2:manual_eliminate', { teamId: manualEliminationTarget });
+  const endPhase2 = () => socketRef.current?.emit('phase2:end');
+
   const validateAnswer = (answer, accepted) => {
   if (!socketRef.current) return;
 
-  // 🔍 Récupération sécurisée des données
+  // Récupération sécurisée des données
   const teamId = answer.teamId || 'team-unknown';
   const points = accepted ? (answer.points || currentQuestion?.points || 10) : 0;
 
-  console.log('📤 Validation envoyée au backend:', { teamId, accepted, points });
+  console.log('Validation envoyée au backend:', { teamId, accepted, points });
 
-  // ✅ Envoi précis des champs attendus par le backend
+  // Envoi précis des champs attendus par le backend
   socketRef.current.emit('answer:validate', {
     teamId,
     accepted,
     points
   });
 
-  // ✅ SUPPRIMER la réponse de l'interface après validation
+  // Supprimer la réponse de l'interface après validation
   setAnswers(prev => prev.filter(a => a.id !== answer.id));
 };
   const sortedTeams = [...teams].sort((a, b) => b.score - a.score);
   const maxScore    = sortedTeams[0]?.score || 1;
   const rankClass   = (i) => i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : '';
+  const devCandidates = tournament?.phase1?.rankings || sortedTeams;
+  const phase2Monitoring = tournament?.phase2?.monitoring || {};
+  const phase2Submissions = tournament?.phase2?.submissions || [];
+  const phase2Penalties = phase2Monitoring.penaltyEvents || [];
+  const phase2HintUsage = phase2Monitoring.hintUsageLog || [];
+  const phase2Activity = phase2Monitoring.activityFeed || [];
+  const phase2QualifiedTeams = tournament?.phase2?.qualifiedTeams || tournament?.phase1?.qualified || [];
 
   return (
     <>
@@ -759,7 +1128,7 @@ export default function Moderator() {
               </div>
               <div>
                 <p className="brand-name">Modérateur</p>
-                <p className="brand-sub">Panneau de contrôle — Crazy Challenge</p>
+                <p className="brand-sub">Panneau de contrôle - Crazy Challenge</p>
               </div>
             </div>
 
@@ -800,6 +1169,286 @@ export default function Moderator() {
               +30 sec
             </button>
           </div>
+
+          <div className="gc p2-panel">
+            <div className="p2-head">
+              <div>
+                <div className="p2-title">
+                  <span>P2</span>
+                  Phase 2 - CSV Elimination Round
+                </div>
+                <p className="p2-muted">
+                  {tournament?.phase === 'phase2'
+                    ? `${tournament?.phase2?.scores?.length || 0} équipes en course · Round ${tournament?.phase2?.roundNumber || 0}`
+                    : 'Terminez la Phase 1 pour verrouiller le Top 4.'}
+                </p>
+              </div>
+              <div className="p2-actions">
+                <button className="p2-mini gold" onClick={endPhase1}>Fin Phase 1</button>
+                <button className="p2-mini red" onClick={startPhase2}>Démarrer Phase 2</button>
+                <button className="p2-mini" onClick={pausePhase2}>{tournament?.phase2?.paused ? 'Reprendre' : 'Pause'}</button>
+                <button className="p2-mini red" onClick={endPhase2}>Clôturer Phase 2</button>
+              </div>
+            </div>
+
+            <div className="p2-grid">
+              <div className="p2-box">
+                <div className="panel-title">Import CSV</div>
+                <input className="p2-file" type="file" accept=".csv,text/csv" onChange={e => setCsvFile(e.target.files?.[0] || null)} />
+                <div className="p2-actions">
+                  <button className="p2-mini" onClick={previewCsv} disabled={!csvFile}>Prévisualiser</button>
+                  <button className="p2-mini green" onClick={importCsv} disabled={!csvFile}>Importer Pack</button>
+                </div>
+                {csvPreview && (
+                  <div>
+                    <p className="p2-muted">
+                      {csvPreview.valid === false
+                        ? `CSV invalide · Champs manquants: ${(csvPreview.missingFields || []).join(', ') || 'lignes incomplètes'}`
+                        : `${csvPreview.count || 0} challenges prêts à importer`}
+                    </p>
+                    {csvPreview.rowErrors?.length > 0 && (
+                      <div style={{ marginTop: '0.6rem', display: 'grid', gap: '0.35rem' }}>
+                        {csvPreview.rowErrors.slice(0, 4).map((row) => (
+                          <div key={row.row} className="p2-muted">
+                            Ligne {row.row}: {row.missing.join(', ')}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="p2-box">
+                <div className="panel-title">Contrôles Challenge</div>
+                <div className="p2-actions">
+                  <button className="p2-mini red" onClick={startPhase2Challenge} disabled={!selectedChallenge}>Lancer challenge</button>
+                  <button className="p2-mini" onClick={endRound}>Fin round</button>
+                  <button className="p2-mini" onClick={skipChallenge}>Passer challenge</button>
+                  <button className="p2-mini" onClick={forceNextRound}>Round suivant</button>
+                  <button className="p2-mini gold" onClick={revealHint}>Révéler indice</button>
+                  <button className="p2-mini" onClick={regenerateHint}>Regénérer indice</button>
+                  <button className="p2-mini red" onClick={revealAnswer}>Révéler réponse</button>
+                </div>
+                <p className="p2-muted">
+                  Challenge actif: {tournament?.phase2?.currentChallenge?.question || 'aucun'}
+                </p>
+                <p className="p2-muted">
+                  Pack actif: {tournament?.phase2?.currentPackName || 'aucun'} · Statut: {tournament?.phase2?.roundStatus || 'idle'}
+                </p>
+              </div>
+            </div>
+
+            <div className="p2-list">
+              {packs.flatMap(pack => (pack.challenges || []).map(challenge => (
+                <button
+                  className={`p2-challenge ${selectedChallenge?.id === challenge.id ? 'active' : ''}`}
+                  key={challenge.id}
+                  onClick={() => {
+                    setSelectedChallenge(challenge);
+                    setChallengeDraft({
+                      id: challenge.id,
+                      packId: challenge.packId,
+                      question: challenge.question || '',
+                      answer: challenge.answer || '',
+                      hint: challenge.hint || '',
+                      category: challenge.category || '',
+                      difficulty: challenge.difficulty || 'Medium',
+                      points: challenge.points ?? 10,
+                      penalty: challenge.penalty ?? -1,
+                      timeLimit: challenge.timeLimit ?? 30
+                    });
+                    setEditStatus('');
+                  }}
+                >
+                  <strong>{challenge.question}</strong>
+                  <span className="p2-muted">
+                    {pack.name} · {challenge.category} · {challenge.difficulty} · {challenge.points} pts · {challenge.penalty} pénalité
+                  </span>
+                </button>
+              )))}
+              {packs.length === 0 && <p className="p2-muted">Aucun challenge pack importé.</p>}
+            </div>
+
+            {challengeDraft && (
+              <div className="p2-box" style={{ marginTop: '1rem' }}>
+                <div className="panel-title">Édition du challenge</div>
+                <div style={{ display: 'grid', gap: '0.75rem', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
+                  <textarea
+                    value={challengeDraft.question}
+                    onChange={(e) => setChallengeDraft(prev => ({ ...prev, question: e.target.value }))}
+                    rows={4}
+                    style={{ gridColumn: '1 / -1', width: '100%', background: 'rgba(15,23,42,0.55)', color: '#e5e7eb', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '10px', padding: '0.85rem' }}
+                    placeholder="Question"
+                  />
+                  <input
+                    value={challengeDraft.answer}
+                    onChange={(e) => setChallengeDraft(prev => ({ ...prev, answer: e.target.value }))}
+                    style={{ width: '100%', background: 'rgba(15,23,42,0.55)', color: '#e5e7eb', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '10px', padding: '0.85rem' }}
+                    placeholder="Réponse"
+                  />
+                  <input
+                    value={challengeDraft.category}
+                    onChange={(e) => setChallengeDraft(prev => ({ ...prev, category: e.target.value }))}
+                    style={{ width: '100%', background: 'rgba(15,23,42,0.55)', color: '#e5e7eb', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '10px', padding: '0.85rem' }}
+                    placeholder="Catégorie"
+                  />
+                  <textarea
+                    value={challengeDraft.hint}
+                    onChange={(e) => setChallengeDraft(prev => ({ ...prev, hint: e.target.value }))}
+                    rows={3}
+                    style={{ gridColumn: '1 / -1', width: '100%', background: 'rgba(15,23,42,0.55)', color: '#e5e7eb', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '10px', padding: '0.85rem' }}
+                    placeholder="Indice"
+                  />
+                  <select
+                    value={challengeDraft.difficulty}
+                    onChange={(e) => setChallengeDraft(prev => ({ ...prev, difficulty: e.target.value }))}
+                    style={{ width: '100%', background: 'rgba(15,23,42,0.55)', color: '#e5e7eb', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '10px', padding: '0.85rem' }}
+                  >
+                    <option value="Easy">Easy</option>
+                    <option value="Medium">Medium</option>
+                    <option value="Hard">Hard</option>
+                  </select>
+                  <input
+                    type="number"
+                    value={challengeDraft.points}
+                    onChange={(e) => setChallengeDraft(prev => ({ ...prev, points: Number(e.target.value) }))}
+                    style={{ width: '100%', background: 'rgba(15,23,42,0.55)', color: '#e5e7eb', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '10px', padding: '0.85rem' }}
+                    placeholder="Points"
+                  />
+                  <input
+                    type="number"
+                    value={challengeDraft.penalty}
+                    onChange={(e) => setChallengeDraft(prev => ({ ...prev, penalty: Number(e.target.value) }))}
+                    style={{ width: '100%', background: 'rgba(15,23,42,0.55)', color: '#e5e7eb', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '10px', padding: '0.85rem' }}
+                    placeholder="Pénalité"
+                  />
+                  <input
+                    type="number"
+                    value={challengeDraft.timeLimit}
+                    onChange={(e) => setChallengeDraft(prev => ({ ...prev, timeLimit: Number(e.target.value) }))}
+                    style={{ width: '100%', background: 'rgba(15,23,42,0.55)', color: '#e5e7eb', border: '1px solid rgba(148,163,184,0.2)', borderRadius: '10px', padding: '0.85rem' }}
+                    placeholder="Temps limite"
+                  />
+                </div>
+                <div className="p2-actions" style={{ marginTop: '0.85rem' }}>
+                  <button className="p2-mini" onClick={regenerateDraftHint}>Régénérer l'indice</button>
+                  <button className="p2-mini green" onClick={saveChallengeEdit}>Sauvegarder</button>
+                </div>
+                {editStatus && <p className="p2-muted" style={{ marginTop: '0.55rem' }}>{editStatus}</p>}
+              </div>
+            )}
+
+            <div className="p2-grid" style={{ marginTop: '1rem' }}>
+              <div className="p2-box">
+                <div className="panel-title">Match Controls</div>
+                <select className="dev-target" value={manualEliminationTarget} onChange={e => setManualEliminationTarget(e.target.value)}>
+                  <option value="">Choisir une équipe qualifiée</option>
+                  {phase2QualifiedTeams.map(team => (
+                    <option key={team.id} value={team.id}>{team.name}</option>
+                  ))}
+                </select>
+                <div className="p2-actions" style={{ marginTop: '0.75rem' }}>
+                  <button className="p2-mini red" onClick={manualEliminate} disabled={!manualEliminationTarget}>Éliminer l'équipe</button>
+                </div>
+              </div>
+
+              <div className="p2-box">
+                <div className="panel-title">Live Submissions</div>
+                <div style={{ display: 'grid', gap: '0.45rem' }}>
+                  {phase2Submissions.length === 0 ? (
+                    <p className="p2-muted">Aucune soumission reçue.</p>
+                  ) : phase2Submissions.slice(-6).reverse().map((submission) => (
+                    <div key={submission.id} className="p2-muted">
+                      {submission.teamName} · {submission.correct ? `+${submission.points}` : `${submission.penalty}`} · {new Date(submission.timestamp).toLocaleTimeString()}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="p2-grid" style={{ marginTop: '1rem' }}>
+              <div className="p2-box">
+                <div className="panel-title">Pénalités</div>
+                <div style={{ display: 'grid', gap: '0.45rem' }}>
+                  {phase2Penalties.length === 0 ? (
+                    <p className="p2-muted">Aucune pénalité.</p>
+                  ) : phase2Penalties.map((entry) => (
+                    <div key={entry.id} className="p2-muted">
+                      {entry.teamName} · {entry.penalty} · {new Date(entry.timestamp).toLocaleTimeString()}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="p2-box">
+                <div className="panel-title">Demandes d'indice</div>
+                <div style={{ display: 'grid', gap: '0.45rem' }}>
+                  {phase2HintUsage.length === 0 ? (
+                    <p className="p2-muted">Aucune demande d'indice.</p>
+                  ) : phase2HintUsage.map((entry) => (
+                    <div key={entry.id} className="p2-muted">
+                      {entry.teamName} · Round {entry.roundNumber} · {new Date(entry.timestamp).toLocaleTimeString()}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="p2-box">
+                <div className="panel-title">Activité des équipes</div>
+                <div style={{ display: 'grid', gap: '0.45rem' }}>
+                  {phase2Activity.length === 0 ? (
+                    <p className="p2-muted">Aucune activité enregistrée.</p>
+                  ) : phase2Activity.map((entry) => (
+                    <div key={entry.id} className="p2-muted">
+                      {entry.message} · {new Date(entry.timestamp).toLocaleTimeString()}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {devStatus.enabled && devPanelOpen && (
+            <div className="gc dev-panel">
+              <div className="dev-head">
+                <div>
+                  <div className="dev-title">Development Testing Panel</div>
+                  <div className="dev-sub">Raccourci d'ouverture: Ctrl + Alt + M</div>
+                </div>
+                <div className="dev-status">
+                  {tournament?.development?.isSkipped ? 'Mock State Active' : 'Development Mode'}
+                </div>
+              </div>
+
+              <div className="dev-grid">
+                <div className="dev-box">
+                  <div className="dev-box-title">Phase Injection</div>
+                  <button className="p2-mini red" onClick={skipPhase1}>SKIP TO PHASE 2</button>
+                  <button className="p2-mini red" onClick={skipPhase3}>SKIP TO PHASE 3</button>
+                </div>
+
+                <div className="dev-box">
+                  <div className="dev-box-title">Mock Systems</div>
+                  <button className="p2-mini" onClick={generateMockRankings}>Generate Mock Rankings</button>
+                  <button className="p2-mini gold" onClick={simulateScores}>Simulate Scores</button>
+                  <button className="p2-mini" onClick={resetTournament}>Reset Tournament</button>
+                </div>
+
+                <div className="dev-box">
+                  <div className="dev-box-title">Manual Team State</div>
+                  <select className="dev-target" value={devTeamTarget} onChange={e => setDevTeamTarget(e.target.value)}>
+                    <option value="">Choisir une équipe</option>
+                    {devCandidates.map(team => (
+                      <option key={team.id} value={team.id}>{team.name}</option>
+                    ))}
+                  </select>
+                  <button className="p2-mini green" onClick={forceQualification} disabled={!devTeamTarget}>Force Qualification</button>
+                  <button className="p2-mini red" onClick={forceElimination} disabled={!devTeamTarget}>Force Elimination</button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* ── Current question banner ── */}
           {currentQuestion && (
@@ -950,7 +1599,7 @@ export default function Moderator() {
                   >
                     <div className="lb-rank">
                       <div className={`lb-rank-num ${rankClass(i)}`}>
-                        {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i+1}`}
+                        #{i + 1}
                       </div>
                     </div>
                     <div className="lb-name">{team.name}</div>

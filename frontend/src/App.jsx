@@ -2,8 +2,9 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import Login from './pages/Login';
 import Moderator from './pages/Moderator';
 import Team from './pages/Team';
-import PublicDashboard from './pages/PublicDashboard'; // ✅ Import unique
+import PublicDashboard from './pages/PublicDashboard';
 import Jury from './pages/Jury';
+import TournamentOverlay from './components/TournamentOverlay';
 
 export default function App() {
   return (
@@ -15,6 +16,7 @@ export default function App() {
         <Route path="/public" element={<PublicDashboard />} />
         <Route path="/jury" element={<Jury />} />
       </Routes>
+      <TournamentOverlay />
     </Router>
   );
 }

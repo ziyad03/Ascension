@@ -39,3 +39,115 @@ model GameSession {
   isActive  Boolean  @default(false)
   createdAt DateTime @default(now())
 }
+
+model Tournament {
+  id                 Int      @id @default(autoincrement())
+  name               String
+  status             String   @default("phase1")
+  developmentMode    Boolean  @default(false)
+  isSkipped          Boolean  @default(false)
+  simulatedResults   Json?
+  generatedRankings  Json?
+  mockTournamentState Json?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model TournamentPhase {
+  id           Int       @id @default(autoincrement())
+  tournamentId Int?
+  phaseNumber  Int
+  name         String
+  status       String    @default("pending")
+  startedAt    DateTime?
+  endedAt      DateTime?
+  metadata     Json?
+  createdAt    DateTime  @default(now())
+}
+
+model QualifiedTeam {
+  id           Int      @id @default(autoincrement())
+  tournamentId Int?
+  phaseNumber  Int
+  teamId       Int?
+  teamName     String
+  score        Int
+  rank         Int
+  createdAt    DateTime @default(now())
+}
+
+model EliminatedTeam {
+  id           Int      @id @default(autoincrement())
+  tournamentId Int?
+  phaseNumber  Int
+  teamId       Int?
+  teamName     String
+  score        Int
+  rank         Int
+  reason       String?
+  createdAt    DateTime @default(now())
+}
+
+model ChallengePack {
+  id             Int                 @id @default(autoincrement())
+  name           String
+  sourceFilename String?
+  challengeCount Int                 @default(0)
+  createdAt      DateTime            @default(now())
+  challenges     ImportedChallenge[]
+}
+
+model ImportedChallenge {
+  id        Int      @id @default(autoincrement())
+  packId    Int
+  question  String
+  answer    String
+  hint      String?
+  category  String
+  difficulty String
+  points    Int
+  penalty   Int
+  timeLimit Int
+  createdAt DateTime @default(now())
+  pack      ChallengePack @relation(fields: [packId], references: [id], onDelete: Cascade)
+}
+
+model HintUsage {
+  id          Int      @id @default(autoincrement())
+  teamId      Int?
+  teamName    String
+  challengeId Int?
+  hint        String
+  createdAt   DateTime @default(now())
+}
+
+model PenaltyLog {
+  id          Int      @id @default(autoincrement())
+  teamId      Int?
+  teamName    String
+  challengeId Int?
+  penalty     Int
+  reason      String
+  createdAt   DateTime @default(now())
+}
+
+model RoundHistory {
+  id           Int      @id @default(autoincrement())
+  phaseNumber  Int
+  challengeId  Int?
+  winnerTeamId Int?
+  winnerName   String?
+  submissions  Json?
+  scoreSnapshot Json?
+  createdAt    DateTime @default(now())
+}
+
+model PhaseResults {
+  id            Int      @id @default(autoincrement())
+  tournamentId  Int?
+  phaseNumber   Int
+  rankings      Json
+  qualified     Json
+  eliminated    Json
+  createdAt     DateTime @default(now())
+}
