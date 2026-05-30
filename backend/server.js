@@ -8,6 +8,8 @@ const { PrismaClient } = require('@prisma/client');
 require('dotenv').config();
 const csvRoutes = require('./routes/csv');
 const { router: phase2CsvRoutes, generateHint } = require('./routes/phase2Csv');
+const { generateRoundQuestions } = require('./services/ai/questionGenerator');
+const localStore = require('./services/localStore');
 
 const prisma = new PrismaClient();
 const DEVELOPMENT_MODE = process.env.NODE_ENV !== 'production'
@@ -62,16 +64,24 @@ app.post('/api/game/buzz', async (req, res) => {
   try {
     const { questionId, buzzTime, teamId } = req.body;
     console.log('BUZZ HTTP reçu:', { questionId, buzzTime, teamId });
+    const activeTeam = activeTeams[String(teamId)];
     
     io.to('moderator-session').emit('game:answer_received', {
       questionId,
-      teamId: teamId || 'Équipe',
+      teamId: activeTeam?.name || teamId || 'Équipe',
       buzzTime,
       answer: 'En attente de réponse...',
       points: 0,
       timestamp: new Date()
     });
-  io.to('public-room').emit('buzz:first', { teamName: teamId || 'Équipe', time: Date.now() });
+  io.to('public-room').emit('buzz:first', {
+    teamName: activeTeam?.name || teamId || 'Équipe',
+    teamId: String(teamId || ''),
+    avatar: activeTeam?.avatar || '',
+    color: activeTeam?.color || '#17e9ff',
+    tag: activeTeam?.tag || '',
+    time: Date.now()
+  });
     
     res.json({ success: true, message: 'Buzz enregistré' });
   } catch (error) {
@@ -85,61 +95,169 @@ app.get('/debug/ping', (req, res) => {
   res.end(JSON.stringify({ ok: true, time: Date.now(), port: process.env.PORT || 10000 }));
 });
 
+app.get('/api/health', async (req, res) => {
+  const health = {
+    ok: true,
+    api: 'ok',
+    database: 'unknown',
+    fallbackStore: 'available',
+    time: new Date().toISOString()
+  };
+
+  try {
+    await dbTimeout(prisma.$queryRaw`SELECT 1`, 'Health database check');
+    health.database = 'ok';
+  } catch (error) {
+    health.database = 'unavailable';
+    health.databaseError = error.message;
+  }
+
+  res.json(health);
+});
+
 app.use('/api/csv', csvRoutes);
 app.use('/api/phase2', phase2CsvRoutes);
 
-// ── AUTH ───────────────────────────────────────────────────
-app.post('/api/auth/register', async (req, res) => {
+const authenticate = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ error: 'Non autorisé' });
+  const token = authHeader.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Non autorisé' });
   try {
-    const { username, password, role, teamName } = req.body;
-    if (await prisma.user.findUnique({ where: { username } })) 
-      return res.status(400).json({ error: 'Utilisateur existe deja' });
+    const payload = jwt.verify(token, process.env.JWT_SECRET || 'dev_secret');
+    req.user = payload;
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: 'Token invalide' });
+  }
+};
+
+app.post('/api/teams', async (req, res) => {
+  try {
+    const { name, tag, color, avatar } = req.body;
+    const teamName = String(name || '').trim();
+    if (!teamName) return res.status(400).json({ error: "Nom d'équipe requis" });
     
-    const hashed = await bcrypt.hash(password, 10);
-    let teamId = null;
-    
-    if (role === 'team' && teamName) {
-      let team = await prisma.team.findUnique({ where: { name: teamName } });
-      if (!team) team = await prisma.team.create({ data: { name: teamName, score: 0 } });
-      teamId = team.id;
+    if (await dbTimeout(prisma.team.findUnique({ where: { name: teamName } }), 'Team lookup')) {
+      return res.status(400).json({ error: 'Cette équipe existe déjà' });
     }
     
-    const user = await prisma.user.create({ 
-      data: { username, password: hashed, role, teamId } 
-    });
+    const team = await dbTimeout(prisma.team.create({
+      data: {
+        name: teamName,
+        tag: String(tag || '').trim().slice(0, 4).toUpperCase() || null,
+        color: color || '#17e9ff',
+        avatar: avatar || null,
+        score: 0
+      }
+    }), 'Team create');
     
-    res.status(201).json({ 
-      message: 'Inscription reussie', 
-      user: { id: user.id, username: user.username, role } 
-    });
-  } catch (e) { 
-    console.error('REGISTER ERROR:', e.message); 
-    res.status(500).json({ error: 'Erreur serveur' }); 
+    res.json(team);
+  } catch (error) {
+    console.warn('Team database create unavailable, using local fallback:', error.message);
+    try {
+      const team = localStore.createTeam(req.body || {});
+      res.json({ ...team, source: 'local_fallback' });
+    } catch (fallbackError) {
+      res.status(fallbackError.statusCode || 500).json({ error: fallbackError.message || 'Erreur serveur' });
+    }
+  }
+});
+
+app.get('/api/teams', async (req, res) => {
+  try {
+    const teams = await dbTimeout(prisma.team.findMany(), 'Team list');
+    const teamsWithCounts = await Promise.all(teams.map(async (t) => {
+      const count = await dbTimeout(prisma.user.count({ where: { teamId: t.id } }), 'Team member count');
+      return { ...t, memberCount: count };
+    }));
+    res.json(teamsWithCounts);
+  } catch (error) {
+    console.warn('Team database list unavailable, using local fallback:', error.message);
+    res.json(localStore.listTeams().map(team => ({ ...team, source: 'local_fallback' })));
+  }
+});
+
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { username, password, role, teamId } = req.body;
+    
+    if (!username || !password) {
+      return res.status(400).json({ error: "Nom d'utilisateur et mot de passe requis" });
+    }
+
+    const hashed = await bcrypt.hash(password, 10);
+    try {
+      if (await dbTimeout(prisma.user.findUnique({ where: { username } }), 'User lookup')) {
+        return res.status(400).json({ error: 'Utilisateur existe deja' });
+      }
+      
+      let assignedTeamId = null;
+      if (role === 'team' && teamId) {
+        const team = await dbTimeout(prisma.team.findUnique({ where: { id: parseInt(teamId, 10) } }), 'Register team lookup');
+        if (!team) {
+          return res.status(400).json({ error: 'Équipe introuvable' });
+        }
+        const memberCount = await dbTimeout(prisma.user.count({ where: { teamId: team.id } }), 'Register team member count');
+        if (memberCount >= 4) {
+          return res.status(400).json({ error: "L'équipe est complète (maximum 4 membres)" });
+        }
+        assignedTeamId = team.id;
+      }
+
+      const user = await dbTimeout(prisma.user.create({
+        data: { username, password: hashed, role, teamId: assignedTeamId }
+      }), 'User create');
+      
+      const team = user.teamId
+        ? await dbTimeout(prisma.team.findUnique({ where: { id: user.teamId } }), 'Registered team lookup')
+        : null;
+      return res.json({ id: user.id, username: user.username, role: user.role, teamId: user.teamId, team });
+    } catch (dbError) {
+      console.warn('User database register unavailable, using local fallback:', dbError.message);
+      const user = localStore.createUser({ username, password: hashed, role, teamId });
+      const team = user.teamId ? localStore.findTeamById(user.teamId) : null;
+      return res.json({ id: user.id, username: user.username, role: user.role, teamId: user.teamId, team, source: 'local_fallback' });
+    }
+  } catch (error) {
+    console.error('Erreur register:', error);
+    res.status(error.statusCode || 500).json({ error: error.message || 'Erreur serveur' });
   }
 });
 
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, password } = req.body;
-    const user = await prisma.user.findUnique({ where: { username } });
-    
-    if (!user || !(await bcrypt.compare(password, user.password))) 
-      return res.status(401).json({ error: 'Identifiants incorrects' });
-    
+    let user;
+    let team = null;
+    let source = 'database';
+    try {
+      user = await dbTimeout(prisma.user.findUnique({ where: { username } }), 'Login user lookup');
+      team = user?.teamId
+        ? await dbTimeout(prisma.team.findUnique({ where: { id: user.teamId } }), 'Login team lookup')
+        : null;
+    } catch (dbError) {
+      console.warn('User database login unavailable, using local fallback:', dbError.message);
+      user = localStore.findUserByUsername(username);
+      team = user?.teamId ? localStore.findTeamById(user.teamId) : null;
+      source = 'local_fallback';
+    }
+    if (!user) return res.status(400).json({ error: 'Identifiants invalides' });
+
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) return res.status(400).json({ error: 'Identifiants invalides' });
+
     const token = jwt.sign(
-      { userId: user.id, role: user.role }, 
-      process.env.JWT_SECRET, 
-      { expiresIn: '1h' }
+      { userId: user.id, role: user.role, teamId: user.teamId }, 
+      process.env.JWT_SECRET || 'dev_secret', 
+      { expiresIn: '24h' }
     );
-    
-    res.json({ token, role: user.role, teamId: user.teamId });
-  } catch (e) { 
-    console.error('LOGIN ERROR:', e.message); 
-    res.status(500).json({ error: 'Erreur serveur' }); 
+    res.json({ token, userId: user.id, role: user.role, teamId: user.teamId, username: user.username, team, source });
+  } catch (error) {
+    console.error('Erreur login:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
 });
-
-app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
 // ── API: Questions ─────────────────────────────────────────
 app.get('/api/questions', async (req, res) => {
@@ -320,7 +438,10 @@ app.post('/api/tournament/phase2/start', async (req, res) => {
       tournamentState.phase2.scores[String(team.id)] = {
         id: String(team.id),
         name: team.name,
-        score: 0,
+        tag: team.tag || '',
+        color: team.color || '#17e9ff',
+        avatar: team.avatar || '',
+        score: activeTeams[teamId]?.score || 0,
         phase1Score: team.score,
         status: 'active'
       };
@@ -403,6 +524,16 @@ const normalizeAnswer = (value) =>
 
 const feedId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+function dbTimeout(promise, label, ms = 150) {
+  let timeout;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timeout = setTimeout(() => reject(new Error(`${label} timeout`)), ms);
+    })
+  ]).finally(() => clearTimeout(timeout));
+}
+
 function pushBounded(list, entry, max = 18) {
   list.unshift(entry);
   if (list.length > max) list.length = max;
@@ -432,13 +563,213 @@ const publicChallenge = (challenge) => {
 };
 
 const DEV_TEAM_POOL = [
-  { id: 'dev-alpha', name: 'Team Alpha' },
-  { id: 'dev-omega', name: 'Team Omega' },
-  { id: 'dev-nova', name: 'Team Nova' },
-  { id: 'dev-vertex', name: 'Team Vertex' },
-  { id: 'dev-aurora', name: 'Team Aurora' },
-  { id: 'dev-rift', name: 'Team Rift' }
+  { id: 'dev-alpha', name: 'Team Alpha', tag: 'ALP', color: '#38bdf8' },
+  { id: 'dev-omega', name: 'Team Omega', tag: 'OMG', color: '#f59e0b' },
+  { id: 'dev-nova', name: 'Team Nova', tag: 'NOV', color: '#a78bfa' },
+  { id: 'dev-vertex', name: 'Team Vertex', tag: 'VTX', color: '#34d399' },
+  { id: 'dev-atlas', name: 'Team Atlas', tag: 'ATL', color: '#fb7185' },
+  { id: 'dev-sigma', name: 'Team Sigma', tag: 'SIG', color: '#22c55e' },
+  { id: 'dev-orion', name: 'Team Orion', tag: 'ORI', color: '#60a5fa' },
+  { id: 'dev-rift', name: 'Team Rift', tag: 'RFT', color: '#f472b6' }
 ];
+
+const PHASE1_TEST_SPEEDS = {
+  realtime: 1800,
+  '2x': 950,
+  '5x': 450,
+  instant: 0
+};
+
+const PHASE1_ROUND_COUNT = 6;
+const PHASE1_QUESTIONS_PER_ROUND = 5;
+const PHASE1_CATEGORIES = [
+  'Technology',
+  'Programming',
+  'Web Development',
+  'Databases',
+  'Networking',
+  'Cybersecurity',
+  'Artificial Intelligence',
+  'Science',
+  'Mathematics',
+  'Logic',
+  'History',
+  'Geography',
+  'Economics',
+  'Business',
+  'Startups',
+  'Engineering',
+  'Culture',
+  'Cinema',
+  'Sports',
+  'General Knowledge',
+  'Mixed Challenges'
+];
+
+const FALLBACK_PHASE1_QUESTIONS = [
+  { text: "Quel protocole chiffre le plus souvent une connexion web HTTPS ?", correctAnswer: 'TLS', category: 'Technology', type: 'short_answer', difficulty: 'Medium' },
+  { text: 'Quelle notation decrit une complexite lineaire ?', correctAnswer: 'O(n)', category: 'Programming', type: 'short_answer', difficulty: 'Medium' },
+  { text: 'Quel pays abrite le site historique du Machu Picchu ?', correctAnswer: 'Perou', category: 'General Knowledge', type: 'short_answer', difficulty: 'Medium' },
+  { text: 'Combien vaut 15 pour cent de 240 ?', correctAnswer: '36', category: 'Mathematics', type: 'short_answer', difficulty: 'Medium' },
+  { text: 'Quel organite produit le plus d energie dans la cellule ?', correctAnswer: 'Mitochondrie', category: 'Science', type: 'short_answer', difficulty: 'Medium' }
+];
+
+const PHASE1_FAST_QUESTION_BANK = {
+  'General Knowledge': [
+    ['Quel pays abrite le site historique du Machu Picchu ?', 'Perou'],
+    ['Quelle mer separe l Europe du Nord de la Grande-Bretagne ?', 'Mer du Nord'],
+    ['Quel pays a accueilli les Jeux olympiques d ete 2016 ?', 'Bresil'],
+    ['Quelle ville est associee au canal qui relie Atlantique et Pacifique ?', 'Panama'],
+    ['Quel pays possede la plus grande population au monde depuis 2023 ?', 'Inde']
+  ],
+  Technology: [
+    ['Quel protocole chiffre le plus souvent une connexion web HTTPS ?', 'TLS'],
+    ['Quel type de base de donnees stocke les donnees en documents JSON ?', 'NoSQL'],
+    ['Quel composant conserve temporairement les donnees pour accelerer les acces ?', 'Cache'],
+    ['Quel principe ajoute des serveurs pour absorber plus de trafic ?', 'Scalabilite horizontale'],
+    ['Quel format leger transporte souvent les donnees entre API web ?', 'JSON']
+  ],
+  Programming: [
+    ['Quelle notation decrit une complexite lineaire ?', 'O(n)'],
+    ['Quel concept permet a une fonction de garder acces a son scope parent ?', 'Closure'],
+    ['Quelle commande Git cree une nouvelle branche ?', 'git branch'],
+    ['Quel type d erreur survient pendant l execution du programme ?', 'Runtime error'],
+    ['Quel fichier verrouille les versions exactes des dependances npm ?', 'package-lock.json']
+  ],
+  'Web Development': [
+    ['Quel en-tete HTTP controle les permissions cross-origin ?', 'CORS'],
+    ['Quel code HTTP indique une ressource introuvable ?', '404'],
+    ['Quel API du navigateur stocke des paires cle valeur persistantes ?', 'localStorage'],
+    ['Quel rendu genere le HTML sur le serveur avant envoi ?', 'SSR'],
+    ['Quel attribut HTML ameliore le texte alternatif des images ?', 'alt']
+  ],
+  Databases: [
+    ['Quel langage interroge une base relationnelle ?', 'SQL'],
+    ['Quelle cle identifie une ligne de maniere unique ?', 'Cle primaire'],
+    ['Quel index accelere une recherche mais ralentit parfois l ecriture ?', 'Index'],
+    ['Quelle operation combine des lignes de deux tables ?', 'JOIN'],
+    ['Quelle propriete ACID garantit tout ou rien ?', 'Atomicite']
+  ],
+  Networking: [
+    ['Quel protocole attribue automatiquement une adresse IP ?', 'DHCP'],
+    ['Quel protocole traduit un nom de domaine en adresse IP ?', 'DNS'],
+    ['Quelle couche OSI gere le routage IP ?', 'Reseau'],
+    ['Quel outil mesure les sauts vers une destination ?', 'traceroute'],
+    ['Quel protocole transporte HTTP de facon fiable ?', 'TCP']
+  ],
+  Cybersecurity: [
+    ['Quelle attaque tente de tromper un utilisateur par faux message ?', 'Phishing'],
+    ['Quel principe donne seulement les droits necessaires ?', 'Moindre privilege'],
+    ['Quel hachage ne doit pas etre reversible ?', 'Hash'],
+    ['Quel test controle l identite avant l acces ?', 'Authentification'],
+    ['Quel second facteur utilise un code temporaire ?', 'OTP']
+  ],
+  'Artificial Intelligence': [
+    ['Quel type de modele est entraine avec donnees etiquetees ?', 'Supervise'],
+    ['Quel phenomene arrive quand un modele memorise trop l entrainement ?', 'Surapprentissage'],
+    ['Quel score mesure souvent precision et rappel ensemble ?', 'F1-score'],
+    ['Quel reseau est inspire du cerveau ?', 'Reseau neuronal'],
+    ['Quel terme designe une instruction envoyee a un LLM ?', 'Prompt']
+  ],
+  Logic: [
+    ['Dans la suite 3, 6, 12, 24, quel est le prochain nombre ?', '48'],
+    ['Si A implique B et A est vrai, que peut-on conclure ?', 'B est vrai'],
+    ['Quel operateur logique est vrai si une seule condition est vraie ?', 'XOR'],
+    ['Si tous les objets du groupe A sont bleus et Mira est dans le groupe A, quelle couleur est Mira ?', 'Bleue'],
+    ['Dans une grille 4 par 4, combien de cases y a-t-il ?', '16']
+  ],
+  Mathematics: [
+    ['Combien vaut 15 pour cent de 240 ?', '36'],
+    ['Quelle est la racine carree de 144 ?', '12'],
+    ['Combien vaut 3 puissance 4 ?', '81'],
+    ['Quel est le perimetre d un carre de cote 9 ?', '36'],
+    ['Combien vaut 7 x 8 moins 6 ?', '50']
+  ],
+  Science: [
+    ['Quel organite produit le plus d energie dans la cellule ?', 'Mitochondrie'],
+    ['Un pH inferieur a 7 indique quel type de solution ?', 'Acide'],
+    ['Quel gaz est majoritaire dans l atmosphere terrestre ?', 'Azote'],
+    ['Quel type d onde transporte la lumiere ?', 'Electromagnetique'],
+    ['Quel scientifique est associe aux lois du mouvement ?', 'Newton']
+  ],
+  History: [
+    ['En quelle annee la chute du mur de Berlin a-t-elle eu lieu ?', '1989'],
+    ['Quel empire avait Constantinople pour capitale ?', 'Byzantin'],
+    ['Quel traite met fin a la Premiere Guerre mondiale ?', 'Versailles'],
+    ['Quel navigateur est associe au tour du monde de 1519 ?', 'Magellan'],
+    ['Quelle revolution commence en France en 1789 ?', 'Revolution francaise']
+  ],
+  Geography: [
+    ['Quel fleuve traverse l Egypte ?', 'Nil'],
+    ['Quelle chaine de montagnes separe la France et l Espagne ?', 'Pyrenees'],
+    ['Quel desert couvre une grande partie de l Afrique du Nord ?', 'Sahara'],
+    ['Quelle capitale est traversee par le Danube ?', 'Budapest'],
+    ['Quel pays a Jakarta pour capitale ?', 'Indonesie']
+  ],
+  Economics: [
+    ['Quel indicateur mesure la hausse generale des prix ?', 'Inflation'],
+    ['Quel marche vend des actions d entreprises ?', 'Bourse'],
+    ['Quel terme decrit une baisse durable de l activite economique ?', 'Recession'],
+    ['Quel acteur fixe souvent les taux directeurs ?', 'Banque centrale'],
+    ['Quel ratio compare dette et richesse produite ?', 'Dette PIB']
+  ],
+  Business: [
+    ['Quel indicateur mesure le revenu avant couts principaux ?', 'Marge brute'],
+    ['Quel document resume le modele economique d une entreprise ?', 'Business plan'],
+    ['Quel cout ne varie pas directement avec le volume produit ?', 'Cout fixe'],
+    ['Quel terme designe la perte de clients sur une periode ?', 'Churn'],
+    ['Quel indicateur suit le cout d acquisition client ?', 'CAC']
+  ],
+  Startups: [
+    ['Quel produit minimal teste une idee rapidement ?', 'MVP'],
+    ['Quel terme designe l adequation produit marche ?', 'Product-market fit'],
+    ['Quelle mesure suit le revenu mensuel recurrent ?', 'MRR'],
+    ['Quel financement echange capital contre parts ?', 'Equity'],
+    ['Quel changement majeur de strategie s appelle un pivot ?', 'Pivot']
+  ],
+  Engineering: [
+    ['Quelle grandeur mesure une force par surface ?', 'Pression'],
+    ['Quel diagramme represente les forces sur un objet ?', 'Diagramme de corps libre'],
+    ['Quelle unite mesure la resistance electrique ?', 'Ohm'],
+    ['Quel materiau resiste bien a la traction dans le beton arme ?', 'Acier'],
+    ['Quel rendement compare energie utile et energie fournie ?', 'Efficacite']
+  ],
+  Culture: [
+    ['Quel auteur a ecrit Les Miserables ?', 'Victor Hugo'],
+    ['Quel mouvement artistique est associe a Monet ?', 'Impressionnisme'],
+    ['Quel compositeur a ecrit La Flute enchantee ?', 'Mozart'],
+    ['Dans quel pays est ne le tango ?', 'Argentine'],
+    ['Quel musee parisien abrite La Joconde ?', 'Louvre']
+  ],
+  Cinema: [
+    ['Quel realisateur est associe au film Inception ?', 'Christopher Nolan'],
+    ['Quel plan montre un personnage de tres pres ?', 'Gros plan'],
+    ['Quelle recompense majeure est decernee a Cannes ?', 'Palme d Or'],
+    ['Quel genre melange enquete et ambiance sombre ?', 'Film noir'],
+    ['Quel metier coordonne le montage final du film ?', 'Monteur']
+  ],
+  Sports: [
+    ['Combien de joueurs une equipe de basket aligne-t-elle sur le terrain ?', '5'],
+    ['Quel tournoi de tennis se joue sur gazon a Londres ?', 'Wimbledon'],
+    ['Dans quel sport utilise-t-on un scrum ?', 'Rugby'],
+    ['Quel pays a remporte la Coupe du monde de football 2018 ?', 'France'],
+    ['Quelle distance officielle fait un marathon ?', '42,195 km']
+  ],
+  'Mixed Challenges': [
+    ['Quel protocole chiffre le plus souvent une connexion web HTTPS ?', 'TLS'],
+    ['Quelle notation decrit une complexite lineaire ?', 'O(n)'],
+    ['Quel pays abrite le site historique du Machu Picchu ?', 'Perou'],
+    ['Combien vaut 15 pour cent de 240 ?', '36'],
+    ['Quel organite produit le plus d energie dans la cellule ?', 'Mitochondrie']
+  ],
+  Mixed: [
+    ['Quel protocole chiffre le plus souvent une connexion web HTTPS ?', 'TLS'],
+    ['Quelle notation decrit une complexite lineaire ?', 'O(n)'],
+    ['Quel pays abrite le site historique du Machu Picchu ?', 'Perou'],
+    ['Combien vaut 15 pour cent de 240 ?', '36'],
+    ['Quel organite produit le plus d energie dans la cellule ?', 'Mitochondrie']
+  ]
+};
 
 const createScoreSeries = (base, spread, count) =>
   Array.from({ length: count }, (_, index) => base - (index * spread) - ((index % 2) * 3));
@@ -450,6 +781,9 @@ function buildMockRankings(teamCount = 6) {
   return source.map((team, index) => ({
     id: team.id,
     name: team.name,
+    tag: team.tag || '',
+    color: team.color || '#17e9ff',
+    avatar: team.avatar || createAvatarDataUri(team.tag || team.name.slice(0, 3), team.color || '#17e9ff'),
     score: scoreSeries[index],
     rank: index + 1,
     streak: Math.max(0, 5 - index),
@@ -459,6 +793,644 @@ function buildMockRankings(teamCount = 6) {
       result: historyIndex <= (4 - index) ? 'correct' : 'wrong'
     }))
   }));
+}
+
+function createAvatarDataUri(tag, color) {
+  const safeTag = String(tag || 'TM').slice(0, 3).toUpperCase();
+  const safeColor = String(color || '#17e9ff');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96"><rect width="96" height="96" rx="18" fill="${safeColor}"/><rect x="10" y="10" width="76" height="76" rx="14" fill="rgba(255,255,255,0.12)"/><text x="48" y="57" text-anchor="middle" font-family="Arial" font-size="28" font-weight="800" fill="white">${safeTag}</text></svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
+function buildPhase1TestQuestions(source = FALLBACK_PHASE1_QUESTIONS) {
+  return source.slice(0, PHASE1_QUESTIONS_PER_ROUND).map((question, index) => ({
+    id: question.id || `phase1-test-q-${index + 1}`,
+    text: question.text || question.question,
+    category: question.category || 'Qualification',
+    points: Number(question.points || 10),
+    type: 'Buzzer',
+    options: [],
+    choices: [],
+    correctAnswer: question.correctAnswer || question.answer || '',
+    answer: question.answer || question.correctAnswer || '',
+    difficulty: question.difficulty || (index < 3 ? 'Medium' : 'Hard'),
+    timeLimit: Number(question.timeLimit || 20)
+  }));
+}
+
+function buildPhase1SimulationQuestions(roundNumber, category) {
+  const bank = PHASE1_FAST_QUESTION_BANK[category] || PHASE1_FAST_QUESTION_BANK['Mixed Challenges'];
+  const source = bank.map(([text, correctAnswer], index) => ({
+    text,
+    correctAnswer,
+    category,
+    type: 'short_answer',
+    difficulty: index < 3 ? 'Medium' : 'Hard'
+  }));
+
+  return buildPhase1TestQuestions(source).map((question, index) => ({
+    ...question,
+    id: `phase1-sim-r${roundNumber}-q${index + 1}`,
+    category,
+    roundNumber
+  }));
+}
+
+function pickPhase1Category(roundNumber = 1) {
+  const seed = `${Date.now()}-${roundNumber}-${Math.random()}`;
+  const score = seed.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  return PHASE1_CATEGORIES[score % PHASE1_CATEGORIES.length];
+}
+
+function pickPhase1CategoryChoices(excludeCategory = null) {
+  const pool = PHASE1_CATEGORIES.filter(category => category !== excludeCategory);
+  const shuffled = pool
+    .map(category => ({ category, score: Math.random() }))
+    .sort((a, b) => a.score - b.score)
+    .map(entry => entry.category);
+
+  return shuffled.slice(0, 3);
+}
+
+function extractJsonArray(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const match = raw.match(/\[[\s\S]*\]/);
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
+  }
+}
+
+async function generateQuestionsWithLocalAI(roundNumber = 1, category = 'Mixed', force = false) {
+  const generated = await generateRoundQuestions({ prisma, roundNumber, category, force });
+  return {
+    ...generated,
+    questions: buildPhase1TestQuestions(generated.questions)
+  };
+}
+
+async function storeGeneratedQuestions(questions) {
+  const stored = [];
+
+  for (const question of questions) {
+    try {
+      const created = await Promise.race([
+        prisma.question.create({
+        data: {
+          text: question.text,
+          category: question.category,
+          points: question.points,
+          type: question.type,
+          options: question.options || undefined,
+          correctAnswer: question.correctAnswer
+        }
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Question persistence timeout')), 700))
+      ]);
+      stored.push(created);
+    } catch (error) {
+      console.warn('Generated question persistence unavailable:', error.message);
+      return questions;
+    }
+  }
+
+  return stored;
+}
+
+function ensurePhase1TestingAllowed() {
+  if (!DEVELOPMENT_MODE) {
+    throw new Error('Mode développement requis');
+  }
+
+  if (['phase2', 'phase2_complete', 'phase3'].includes(tournamentState.phase)) {
+    throw new Error('Floor 1 testing is locked after Floor 2 starts');
+  }
+}
+
+function applyPhase1Rankings(rankings, action, extra = {}) {
+  const ranked = rankings
+    .sort((a, b) => (b.score || 0) - (a.score || 0))
+    .map((team, index) => ({ ...team, rank: index + 1 }));
+  const qualified = ranked.slice(0, 4).map(team => ({ ...team, status: 'qualified' }));
+  const eliminated = ranked.slice(4).map(team => ({ ...team, status: 'eliminated' }));
+
+  tournamentState.phase1 = {
+    ...tournamentState.phase1,
+    rankings: ranked,
+    qualified,
+    eliminated,
+    test: {
+      ...(tournamentState.phase1.test || {}),
+      lastAction: action,
+      updatedAt: new Date().toISOString(),
+      ...extra
+    }
+  };
+
+  applyDevelopmentSnapshot(action, ranked, qualified, eliminated, {
+    source: action,
+    phase: 'phase1',
+    ...extra
+  });
+
+  return { rankings: ranked, qualified, eliminated };
+}
+
+function syncActiveTeamsFromRankings(rankings) {
+  rankings.forEach(team => {
+    activeTeams[String(team.id)] = {
+      ...(activeTeams[String(team.id)] || {}),
+      id: String(team.id),
+      name: team.name,
+      score: team.score || 0,
+      tag: team.tag || '',
+      color: team.color || '#17e9ff',
+      avatar: team.avatar || '',
+      socketId: activeTeams[String(team.id)]?.socketId || null
+    };
+  });
+}
+
+function emitPhase1Scoreboard() {
+  const sortedTeams = Object.values(activeTeams)
+    .sort((a, b) => (b.score || 0) - (a.score || 0));
+
+  io.to('moderator-session').emit('score:refresh', { teams: sortedTeams });
+  io.to('public-room').emit('score:refresh', { teams: sortedTeams });
+}
+
+function normalizePhase1Category(category) {
+  return PHASE1_CATEGORIES.includes(category) ? category : 'Mixed Challenges';
+}
+
+async function generatePhase1TestQuestions({ startImmediately = false, category = null, fast = true } = {}) {
+  ensurePhase1TestingAllowed();
+
+  const nextRoundNumber = Math.min((tournamentState.phase1.test?.roundNumber || 0) + 1, PHASE1_ROUND_COUNT);
+  const selectedCategory = tournamentState.phase1.test?.selectedNextCategory;
+  if (tournamentState.phase1.test?.pendingCategoryChoice && !selectedCategory) {
+    throw new Error('Le gagnant du round doit choisir la prochaine categorie.');
+  }
+  const roundCategory = normalizePhase1Category(
+    tournamentState.phase1.test?.pendingCategoryChoice
+      ? selectedCategory
+      : category || selectedCategory || tournamentState.phase1.test?.roundCategory || 'Mixed'
+  );
+  const generated = fast
+    ? {
+        questions: buildPhase1SimulationQuestions(nextRoundNumber, roundCategory),
+        source: 'local_french_fast',
+        roundNumber: nextRoundNumber
+      }
+    : await generateQuestionsWithLocalAI(nextRoundNumber, roundCategory);
+  const questions = generated.source === 'cache' || generated.source.startsWith('fallback_') || generated.source === 'local_french_fast'
+    ? generated.questions
+    : await storeGeneratedQuestions(generated.questions);
+  tournamentState.phase = 'phase1';
+  tournamentState.phase1 = {
+    ...tournamentState.phase1,
+    test: {
+      ...(tournamentState.phase1.test || {}),
+      generatedQuestions: questions,
+      generatedQuestionSource: generated.source,
+      roundCategory,
+      selectedNextCategory: null,
+      nextCategoryChoices: [],
+      pendingCategoryChoice: false,
+      totalRounds: PHASE1_ROUND_COUNT,
+      questionsPerRound: PHASE1_QUESTIONS_PER_ROUND,
+      preloadedRoundNumber: nextRoundNumber + 1,
+      currentQuestionIndex: startImmediately ? 0 : -1,
+      status: startImmediately ? 'live' : 'ready',
+      lastAction: 'generate_test_questions',
+      updatedAt: new Date().toISOString()
+    }
+  };
+  tournamentState.development.lastAction = 'generate_test_questions';
+  tournamentState.development.isSkipped = true;
+  tournamentState.development.mockTournamentState = {
+    phase: 'phase1',
+    source: generated.source,
+    generatedQuestions: questions
+  };
+
+  await persistTournamentDevelopmentState();
+
+  if (startImmediately && questions[0]) {
+    broadcastPhase1Question(questions[0]);
+  }
+
+  const preloadCategory = pickPhase1Category(nextRoundNumber + 1);
+  generateQuestionsWithLocalAI(nextRoundNumber + 1, preloadCategory, true)
+    .then((preloaded) => {
+      tournamentState.phase1.test = {
+        ...(tournamentState.phase1.test || {}),
+        preloadedRoundNumber: preloaded.roundNumber,
+        preloadedQuestionSource: preloaded.source,
+        updatedAt: new Date().toISOString()
+      };
+      broadcastTournamentState('phase1:test_state_updated');
+    })
+    .catch((error) => {
+      console.warn('Phase 1 next-round preload unavailable:', error.message);
+    });
+
+  return {
+    questions,
+    source: generated.source,
+    category: roundCategory,
+    roundNumber: nextRoundNumber,
+    startImmediately,
+    snapshot: getTournamentSnapshot()
+  };
+}
+
+function announcePhase1({ category = 'Mixed' } = {}) {
+  ensurePhase1TestingAllowed();
+  const roundCategory = normalizePhase1Category(category);
+  tournamentState.phase = 'phase1';
+  tournamentState.phase1 = {
+    ...(tournamentState.phase1 || {}),
+    test: {
+      ...(tournamentState.phase1.test || {}),
+      roundCategory,
+      selectedNextCategory: roundCategory,
+      status: 'announced',
+      totalRounds: PHASE1_ROUND_COUNT,
+      questionsPerRound: PHASE1_QUESTIONS_PER_ROUND,
+      lastAction: 'phase1_announced',
+      updatedAt: new Date().toISOString()
+    }
+  };
+  const snapshot = getTournamentSnapshot();
+  io.emit('phase1:announced', snapshot);
+  broadcastTournamentState('phase1:test_state_updated');
+  return snapshot;
+}
+
+function generatePhase1MockTeams() {
+  ensurePhase1TestingAllowed();
+
+  const scores = [42, 38, 33, 29, 24, 18, 12, 8];
+  const rankings = DEV_TEAM_POOL.map((team, index) => ({
+    id: `phase1-test-${team.id}`,
+    name: team.name,
+    tag: team.tag,
+    color: team.color,
+    avatar: createAvatarDataUri(team.tag, team.color),
+    score: scores[index] || Math.max(0, 42 - index * 5),
+    streak: Math.max(0, 4 - index),
+    penalties: 0,
+    answerHistory: []
+  }));
+
+  syncActiveTeamsFromRankings(rankings);
+  const result = applyPhase1Rankings(rankings, 'phase1_generate_mock_teams', {
+    mockTeams: rankings
+  });
+  emitPhase1Scoreboard();
+  return { ...result, snapshot: getTournamentSnapshot() };
+}
+
+function broadcastPhase1Question(question) {
+  const payload = {
+    id: question.id,
+    text: question.text,
+    question: question.text,
+    category: question.category || 'Qualification',
+    points: question.points || 10,
+    type: 'Buzzer',
+    options: [],
+    choices: [],
+    difficulty: question.difficulty || 'Easy',
+    timeLimit: question.timeLimit || 20
+  };
+
+  tournamentState.phase1.test = {
+    ...(tournamentState.phase1.test || {}),
+    currentQuestion: payload,
+    status: 'live',
+    updatedAt: new Date().toISOString()
+  };
+
+  io.to('session-1').emit('game:new_question', payload);
+  io.to('public-room').emit('game:new_question', payload);
+  io.to('jury-room').emit('game:new_question', payload);
+  io.to('moderator-session').emit('phase1:test_question_started', {
+    question: {
+      ...payload,
+      correctAnswer: question.correctAnswer || question.answer || '',
+      answer: question.answer || question.correctAnswer || ''
+    },
+    category: payload.category,
+    snapshot: getTournamentSnapshot()
+  });
+}
+
+function advancePhase1Question() {
+  ensurePhase1TestingAllowed();
+  const test = tournamentState.phase1.test || {};
+  const questions = test.generatedQuestions || [];
+  if (questions.length === 0) {
+    throw new Error('Generate Questions before advancing.');
+  }
+
+  const nextIndex = (test.currentQuestionIndex ?? -1) + 1;
+  if (nextIndex >= questions.length) {
+    clearPhase1Question('round_finished');
+    tournamentState.phase1.test = {
+      ...test,
+      currentQuestionIndex: questions.length - 1,
+      status: 'round_finished',
+      updatedAt: new Date().toISOString()
+    };
+    return { finishedRound: true, snapshot: getTournamentSnapshot() };
+  }
+
+  tournamentState.phase1.test = {
+    ...test,
+    currentQuestionIndex: nextIndex,
+    status: 'live',
+    updatedAt: new Date().toISOString()
+  };
+  broadcastPhase1Question(questions[nextIndex]);
+  return { question: questions[nextIndex], snapshot: getTournamentSnapshot() };
+}
+
+function clearPhase1Question(status = 'idle') {
+  tournamentState.phase1.test = {
+    ...(tournamentState.phase1.test || {}),
+    currentQuestion: null,
+    status,
+    updatedAt: new Date().toISOString()
+  };
+
+  io.emit('game:clear_question', { phase: 'phase1', status });
+  broadcastTournamentState('phase1:test_state_updated');
+}
+
+function scorePhase1Round({ finish = false } = {}) {
+  ensurePhase1TestingAllowed();
+
+  const teams = Object.values(activeTeams);
+  if (teams.length === 0) {
+    generatePhase1MockTeams();
+  }
+
+  const question = tournamentState.phase1.test?.currentQuestion
+    || tournamentState.phase1.test?.generatedQuestions?.[tournamentState.phase1.test?.currentQuestionIndex || 0]
+    || FALLBACK_PHASE1_QUESTIONS[0];
+
+  Object.values(activeTeams).forEach((team, index) => {
+    const answeredCorrectly = index < 4 || Math.random() > 0.42;
+    const gained = answeredCorrectly ? (question.points || 10) : 0;
+    team.score = (team.score || 0) + gained;
+    team.streak = answeredCorrectly ? (team.streak || 0) + 1 : 0;
+    team.answerHistory = [
+      ...(team.answerHistory || []),
+      {
+        round: tournamentState.phase1.test?.roundNumber || 1,
+        result: answeredCorrectly ? 'correct' : 'wrong',
+        points: gained
+      }
+    ].slice(-10);
+  });
+
+  const rankings = Object.values(activeTeams).map(team => ({
+    id: String(team.id),
+    name: team.name,
+    tag: team.tag || '',
+    color: team.color || '#17e9ff',
+    avatar: team.avatar || '',
+    score: team.score || 0,
+    streak: team.streak || 0,
+    penalties: 0,
+    answerHistory: team.answerHistory || []
+  }));
+
+  const result = applyPhase1Rankings(rankings, finish ? 'phase1_finish_round' : 'phase1_auto_answer', {
+    roundNumber: tournamentState.phase1.test?.roundNumber || 1
+  });
+  emitPhase1Scoreboard();
+  broadcastTournamentState('phase1:test_state_updated');
+  return result;
+}
+
+function preparePhase1NextCategoryChoice(roundResult) {
+  ensurePhase1TestingAllowed();
+
+  const test = tournamentState.phase1.test || {};
+  const roundNumber = test.roundNumber || 1;
+  if (roundNumber >= PHASE1_ROUND_COUNT) {
+    return null;
+  }
+
+  const roundWinner = roundResult?.rankings?.[0] || tournamentState.phase1.rankings?.[0] || null;
+  const choices = pickPhase1CategoryChoices(test.roundCategory);
+
+  tournamentState.phase1.test = {
+    ...test,
+    currentQuestion: null,
+    roundWinner,
+    nextCategoryChoices: choices,
+    pendingCategoryChoice: true,
+    selectedNextCategory: null,
+    status: 'category_choice',
+    lastAction: 'phase1_category_choice',
+    updatedAt: new Date().toISOString()
+  };
+
+  const payload = {
+    roundWinner,
+    choices,
+    roundNumber,
+    nextRoundNumber: Math.min(roundNumber + 1, PHASE1_ROUND_COUNT),
+    snapshot: getTournamentSnapshot()
+  };
+
+  io.emit('phase1:category_choices', payload);
+  broadcastTournamentState('phase1:test_state_updated');
+  return payload;
+}
+
+function choosePhase1NextCategory({ category, teamId } = {}) {
+  ensurePhase1TestingAllowed();
+
+  const test = tournamentState.phase1.test || {};
+  const choices = test.nextCategoryChoices || [];
+  if (!test.pendingCategoryChoice || choices.length === 0) {
+    throw new Error('Aucune categorie en attente.');
+  }
+
+  if (!choices.includes(category)) {
+    throw new Error('Categorie non disponible.');
+  }
+
+  const requesterId = String(teamId || 'moderator');
+  const winnerId = String(test.roundWinner?.id || '');
+  if (requesterId !== 'moderator' && winnerId && requesterId !== winnerId) {
+    throw new Error("Seul le gagnant du round peut choisir la categorie.");
+  }
+
+  tournamentState.phase1.test = {
+    ...test,
+    selectedNextCategory: category,
+    pendingCategoryChoice: false,
+    status: 'category_chosen',
+    lastAction: 'phase1_category_chosen',
+    updatedAt: new Date().toISOString()
+  };
+
+  const payload = {
+    category,
+    teamId: requesterId,
+    nextRoundNumber: Math.min((test.roundNumber || 0) + 1, PHASE1_ROUND_COUNT),
+    snapshot: getTournamentSnapshot()
+  };
+
+  io.emit('phase1:category_chosen', payload);
+  broadcastTournamentState('phase1:test_state_updated');
+  return payload;
+}
+
+async function finishPhase1ForTesting({ revealOnly = false } = {}) {
+  ensurePhase1TestingAllowed();
+
+  if (Object.keys(activeTeams).length === 0) {
+    generatePhase1MockTeams();
+  }
+
+  const rankings = await getRankingsFromTeams();
+  const result = applyPhase1Rankings(rankings, revealOnly ? 'phase1_jump_qualification_reveal' : 'phase1_finish_for_testing', {
+    revealOnly,
+    status: 'qualification_reveal'
+  });
+
+  tournamentState.phase = 'phase1_complete';
+  tournamentState.phase1 = {
+    ...tournamentState.phase1,
+    rankings: result.rankings,
+    qualified: result.qualified,
+    eliminated: result.eliminated
+  };
+  resetPhase2State();
+  resetPhase3State();
+  tournamentState.phase2.qualifiedTeams = result.qualified;
+  tournamentState.phase2.eliminatedTeams = result.eliminated;
+
+  await persistPhaseResults(1, result.rankings, result.qualified, result.eliminated);
+  await persistTournamentDevelopmentState();
+  broadcastTournamentState('tournament:phase1_complete');
+  return getTournamentSnapshot();
+}
+
+async function restartPhase1ForTesting() {
+  ensurePhase1TestingAllowed();
+
+  Object.keys(activeTeams).forEach(teamId => {
+    if (teamId.startsWith('phase1-test-')) {
+      delete activeTeams[teamId];
+    } else {
+      activeTeams[teamId] = { ...activeTeams[teamId], score: 0, streak: 0, answerHistory: [] };
+    }
+  });
+
+  tournamentState.phase = 'phase1';
+  tournamentState.phase1 = {
+    rankings: [],
+    qualified: [],
+    eliminated: [],
+    test: {
+      generatedQuestions: [],
+      currentQuestion: null,
+      currentQuestionIndex: -1,
+      roundNumber: 0,
+      status: 'idle',
+      lastAction: 'phase1_restart',
+      updatedAt: new Date().toISOString()
+    }
+  };
+  tournamentState.development.lastAction = 'phase1_restart';
+  tournamentState.development.isSkipped = false;
+  tournamentState.development.simulatedResults = null;
+  tournamentState.development.generatedRankings = [];
+  tournamentState.development.mockTournamentState = null;
+
+  emitPhase1Scoreboard();
+  clearPhase1Question('idle');
+  await persistTournamentDevelopmentState();
+  return getTournamentSnapshot();
+}
+
+async function simulatePhase1TournamentForTesting(speed = '5x') {
+  ensurePhase1TestingAllowed();
+
+  if (Object.keys(activeTeams).length === 0) {
+    generatePhase1MockTeams();
+  }
+
+  const delayMs = PHASE1_TEST_SPEEDS[speed] ?? PHASE1_TEST_SPEEDS['5x'];
+  tournamentState.phase = 'phase1';
+  tournamentState.phase1.test = {
+    ...(tournamentState.phase1.test || {}),
+    speed,
+    status: 'simulating',
+    lastAction: 'phase1_simulate_tournament',
+    updatedAt: new Date().toISOString()
+  };
+
+  for (let round = 1; round <= PHASE1_ROUND_COUNT; round += 1) {
+    const selectedCategory = tournamentState.phase1.test?.selectedNextCategory;
+    const category = PHASE1_CATEGORIES.includes(selectedCategory)
+      ? selectedCategory
+      : pickPhase1Category(round);
+    const questions = buildPhase1SimulationQuestions(round, category);
+    tournamentState.phase1.test = {
+      ...(tournamentState.phase1.test || {}),
+      generatedQuestions: questions,
+      generatedQuestionSource: 'simulation_local_french',
+      roundCategory: category,
+      selectedNextCategory: null,
+      nextCategoryChoices: [],
+      pendingCategoryChoice: false,
+      totalRounds: PHASE1_ROUND_COUNT,
+      questionsPerRound: PHASE1_QUESTIONS_PER_ROUND,
+      roundNumber: round,
+      currentQuestionIndex: -1,
+      status: 'simulating',
+      updatedAt: new Date().toISOString()
+    };
+    let lastRoundResult = null;
+
+    for (let index = 0; index < questions.length; index += 1) {
+      tournamentState.phase1.test.currentQuestionIndex = index;
+      broadcastPhase1Question(questions[index]);
+      lastRoundResult = scorePhase1Round();
+
+      if (delayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+
+    const choicePayload = preparePhase1NextCategoryChoice(lastRoundResult);
+    if (choicePayload?.choices?.[0]) {
+      choosePhase1NextCategory({ category: choicePayload.choices[0], teamId: 'moderator' });
+      if (delayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, Math.min(delayMs, 650)));
+      }
+    }
+  }
+
+  clearPhase1Question('qualification_reveal');
+  return finishPhase1ForTesting({ revealOnly: false });
 }
 
 function buildPhase2MockScores(qualifiedTeams) {
@@ -489,13 +1461,13 @@ async function ensureTournament() {
   if (tournamentState.tournamentId) return tournamentState.tournamentId;
 
   try {
-    const tournament = await prisma.tournament.create({
+    const tournament = await dbTimeout(prisma.tournament.create({
       data: {
         name: `Crazy Challenge ${new Date().toISOString()}`,
         status: tournamentState.phase,
         developmentMode: DEVELOPMENT_MODE
       }
-    });
+    }), 'Tournament create');
     tournamentState.tournamentId = tournament.id;
     return tournament.id;
   } catch (error) {
@@ -509,7 +1481,7 @@ async function persistTournamentDevelopmentState() {
   if (!tournamentId) return;
 
   try {
-    await prisma.tournament.update({
+    await dbTimeout(prisma.tournament.update({
       where: { id: tournamentId },
       data: {
         status: tournamentState.phase,
@@ -519,7 +1491,7 @@ async function persistTournamentDevelopmentState() {
         generatedRankings: tournamentState.development.generatedRankings,
         mockTournamentState: tournamentState.development.mockTournamentState
       }
-    });
+    }), 'Tournament update');
   } catch (error) {
     console.warn('Tournament dev state persistence unavailable:', error.message);
   }
@@ -534,7 +1506,10 @@ async function getRankingsFromTeams() {
       byId.set(String(team.id), {
         id: String(team.id),
         name: team.name,
-        score: team.score || 0
+        score: team.score || 0,
+        tag: team.tag || '',
+        color: team.color || '#17e9ff',
+        avatar: team.avatar || ''
       });
     });
   } catch (error) {
@@ -545,7 +1520,10 @@ async function getRankingsFromTeams() {
     byId.set(String(team.id), {
       id: String(team.id),
       name: team.name || `Équipe ${team.id}`,
-      score: team.score || 0
+      score: team.score || 0,
+      tag: team.tag || '',
+      color: team.color || '#17e9ff',
+      avatar: team.avatar || ''
     });
   });
 
@@ -704,6 +1682,9 @@ function initializePhase2State(qualified, eliminated, scores, source = 'normal')
     tournamentState.phase2.scores[String(team.id)] = {
       id: String(team.id),
       name: team.name,
+      tag: team.tag || '',
+      color: team.color || '#17e9ff',
+      avatar: team.avatar || '',
       score: team.score,
       phase1Score: team.phase1Score ?? team.score,
       status: team.status || 'active',
@@ -1025,7 +2006,7 @@ async function endPhase2() {
 io.on('connection', (socket) => {
   console.log('Connecté:', socket.id);
 
-socket.on('join', ({ room, role, teamId, teamName }) => {
+socket.on('join', ({ room, role, teamId, teamName, tag, color, avatar }) => {
     socket.join(room);
     console.log(`${socket.id} -> ${room} (${role})`);
 
@@ -1033,6 +2014,9 @@ socket.on('join', ({ room, role, teamId, teamName }) => {
       activeTeams[teamId] = {
         id: teamId,
         name: teamName || `Équipe ${teamId}`,
+        tag: tag || '',
+        color: color || '#17e9ff',
+        avatar: avatar || '',
         score: 0,
         socketId: socket.id
       };
@@ -1056,6 +2040,9 @@ socket.on('moderator:send_question', (data) => {
       category: data.category || 'Général',
       points: data.points || 10,
       type: data.type || 'multiple_choice',
+      options: data.options || data.choices || [],
+      choices: data.choices || data.options || [],
+      difficulty: data.difficulty || 'Easy',
       timeLimit: data.timer || data.timeLimit || 30
     });
   io.to('public-room').emit('game:new_question', {
@@ -1064,6 +2051,9 @@ socket.on('moderator:send_question', (data) => {
     category: data.category || 'Général',
     points: data.points || 10,
     type: data.type || 'multiple_choice',
+    options: data.options || data.choices || [],
+    choices: data.choices || data.options || [],
+    difficulty: data.difficulty || 'Easy',
     timeLimit: data.timer || data.timeLimit || 30
   });
   io.to('jury-room').emit('game:new_question', {
@@ -1072,6 +2062,9 @@ socket.on('moderator:send_question', (data) => {
     category: data.category || 'Général',
     points: data.points || 10,
     type: data.type || 'multiple_choice',
+    options: data.options || data.choices || [],
+    choices: data.choices || data.options || [],
+    difficulty: data.difficulty || 'Easy',
     timeLimit: data.timer || data.timeLimit || 30
   });
   });
@@ -1109,6 +2102,16 @@ socket.on('team:buzz', ({ teamId, teamName, questionId, buzzTime, points }) => {
     } catch (error) {
       console.error('Erreur socket fin Phase 1:', error);
       socket.emit('phase:error', { error: 'Erreur fin Phase 1' });
+    }
+  });
+
+  socket.on('phase1:announce', (payload = {}) => {
+    try {
+      const result = announcePhase1(payload);
+      socket.emit('phase1:announced_ack', result);
+    } catch (error) {
+      console.error('Erreur annonce Phase 1:', error);
+      socket.emit('phase:error', { error: error.message || 'Erreur annonce Phase 1' });
     }
   });
 
@@ -1210,6 +2213,132 @@ socket.on('team:buzz', ({ teamId, teamName, questionId, buzzTime, points }) => {
     }
   });
 
+  socket.on('phase1:test_generate_questions', async (payload = {}) => {
+    try {
+      const result = await generatePhase1TestQuestions({
+        startImmediately: Boolean(payload.startImmediately),
+        category: payload.category,
+        fast: payload.fast !== false
+      });
+      io.emit('phase1:test_questions_generated', result);
+      broadcastTournamentState('phase1:test_state_updated');
+    } catch (error) {
+      console.error('Erreur generation questions Phase 1:', error);
+      socket.emit('phase:error', { error: error.message || 'Erreur generation questions Phase 1' });
+    }
+  });
+
+  socket.on('phase1:test_generate_mock_teams', async () => {
+    try {
+      const result = generatePhase1MockTeams();
+      await persistTournamentDevelopmentState();
+      io.emit('phase1:test_state_updated', result.snapshot);
+    } catch (error) {
+      console.error('Erreur mock teams Phase 1:', error);
+      socket.emit('phase:error', { error: error.message || 'Erreur mock teams Phase 1' });
+    }
+  });
+
+  socket.on('phase1:test_auto_answer', async () => {
+    try {
+      scorePhase1Round();
+      await persistTournamentDevelopmentState();
+    } catch (error) {
+      console.error('Erreur auto answer Phase 1:', error);
+      socket.emit('phase:error', { error: error.message || 'Erreur auto answer Phase 1' });
+    }
+  });
+
+  socket.on('phase1:test_skip_question', () => {
+    try {
+      const result = advancePhase1Question();
+      io.emit('phase1:test_state_updated', result.snapshot);
+    } catch (error) {
+      console.error('Erreur skip question Phase 1:', error);
+      socket.emit('phase:error', { error: error.message || 'Erreur skip question Phase 1' });
+    }
+  });
+
+  socket.on('phase1:test_skip_round', () => {
+    try {
+      ensurePhase1TestingAllowed();
+      tournamentState.phase1.test = {
+        ...(tournamentState.phase1.test || {}),
+        roundNumber: Math.min((tournamentState.phase1.test?.roundNumber || 0) + 1, PHASE1_ROUND_COUNT),
+        lastAction: 'phase1_skip_round'
+      };
+      clearPhase1Question('round_skipped');
+    } catch (error) {
+      console.error('Erreur skip round Phase 1:', error);
+      socket.emit('phase:error', { error: error.message || 'Erreur skip round Phase 1' });
+    }
+  });
+
+  socket.on('phase1:test_finish_round', async () => {
+    try {
+      const result = scorePhase1Round({ finish: true });
+      clearPhase1Question('round_finished');
+      preparePhase1NextCategoryChoice(result);
+      await persistTournamentDevelopmentState();
+    } catch (error) {
+      console.error('Erreur finish round Phase 1:', error);
+      socket.emit('phase:error', { error: error.message || 'Erreur finish round Phase 1' });
+    }
+  });
+
+  socket.on('phase1:choose_category', async (payload = {}) => {
+    try {
+      const result = choosePhase1NextCategory(payload);
+      await persistTournamentDevelopmentState();
+      socket.emit('phase1:category_chosen_ack', result);
+    } catch (error) {
+      console.error('Erreur choix categorie Phase 1:', error);
+      socket.emit('phase:error', { error: error.message || 'Erreur choix categorie Phase 1' });
+    }
+  });
+
+  socket.on('phase1:test_finish_phase', async () => {
+    try {
+      const result = await finishPhase1ForTesting({ revealOnly: false });
+      io.emit('tournament:phase1_complete', {
+        ...getTournamentSnapshot(),
+        result
+      });
+    } catch (error) {
+      console.error('Erreur finish Phase 1 test:', error);
+      socket.emit('phase:error', { error: error.message || 'Erreur finish Phase 1 test' });
+    }
+  });
+
+  socket.on('phase1:test_jump_qualification', async () => {
+    try {
+      await finishPhase1ForTesting({ revealOnly: true });
+    } catch (error) {
+      console.error('Erreur qualification reveal Phase 1:', error);
+      socket.emit('phase:error', { error: error.message || 'Erreur qualification reveal Phase 1' });
+    }
+  });
+
+  socket.on('phase1:test_restart', async () => {
+    try {
+      const result = await restartPhase1ForTesting();
+      io.emit('phase1:test_reset', result);
+    } catch (error) {
+      console.error('Erreur restart Phase 1:', error);
+      socket.emit('phase:error', { error: error.message || 'Erreur restart Phase 1' });
+    }
+  });
+
+  socket.on('phase1:test_simulate_tournament', async ({ speed } = {}) => {
+    try {
+      const result = await simulatePhase1TournamentForTesting(speed);
+      io.emit('phase1:test_simulation_complete', result);
+    } catch (error) {
+      console.error('Erreur simulation Phase 1:', error);
+      socket.emit('phase:error', { error: error.message || 'Erreur simulation Phase 1' });
+    }
+  });
+
   socket.on('phase2:start', async () => {
     try {
       if (tournamentState.phase1.qualified.length === 0) {
@@ -1241,6 +2370,9 @@ socket.on('team:buzz', ({ teamId, teamName, questionId, buzzTime, points }) => {
         tournamentState.phase2.scores[String(team.id)] = {
           id: String(team.id),
           name: team.name,
+          tag: team.tag || '',
+          color: team.color || '#17e9ff',
+          avatar: team.avatar || '',
           score: 0,
           phase1Score: team.score,
           status: 'active'
@@ -1318,6 +2450,9 @@ socket.on('team:buzz', ({ teamId, teamName, questionId, buzzTime, points }) => {
         tournamentState.phase2.scores[id] = {
           id,
           name: teamName || activeTeams[id]?.name || `Équipe ${id}`,
+          tag: activeTeams[id]?.tag || '',
+          color: activeTeams[id]?.color || '#17e9ff',
+          avatar: activeTeams[id]?.avatar || '',
           score: 0,
           phase1Score: 0,
           status: 'active'
@@ -1435,6 +2570,9 @@ socket.on('team:buzz', ({ teamId, teamName, questionId, buzzTime, points }) => {
       tournamentState.phase2.scores[id] = tournamentState.phase2.scores[id] || {
         id,
         name: teamName || activeTeams[id]?.name || `Équipe ${id}`,
+        tag: activeTeams[id]?.tag || '',
+        color: activeTeams[id]?.color || '#17e9ff',
+        avatar: activeTeams[id]?.avatar || '',
         score: 0,
         phase1Score: 0,
         status: 'active'

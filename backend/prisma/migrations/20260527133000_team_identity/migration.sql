@@ -1,0 +1,4 @@
+ALTER TABLE "Team"
+ADD COLUMN "tag" TEXT,
+ADD COLUMN "color" TEXT,
+ADD COLUMN "avatar" TEXT;

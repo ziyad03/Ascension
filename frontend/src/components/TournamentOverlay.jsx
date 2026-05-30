@@ -59,6 +59,44 @@ const overlayStyles = `
     text-align: center;
   }
 
+  .tt-tower {
+    width: min(220px, 42vw);
+    height: 260px;
+    margin: 0 auto 8px;
+    border-radius: 120px 120px 26px 26px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,0.12), transparent 18%),
+      linear-gradient(180deg, rgba(34,211,238,0.18), rgba(30,41,59,0.92));
+    border: 1px solid rgba(255,255,255,0.12);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04), 0 26px 70px rgba(6,182,212,0.18);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .tt-tower::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    top: 26px;
+    bottom: 26px;
+    width: 18px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, rgba(251,191,36,0.64), rgba(99,102,241,0.85));
+  }
+
+  .tt-lift {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #f8fafc, #67e8f9);
+    box-shadow: 0 0 26px rgba(103,232,249,0.55);
+    transition: bottom 0.8s cubic-bezier(.22,1,.36,1);
+  }
+
   .tt-kicker {
     color: #67e8f9;
     letter-spacing: 0.24em;
@@ -260,7 +298,19 @@ export default function TournamentOverlay() {
     socket.on('tournament:dev_phase2_started', runDevPhase2Start);
     socket.on('tournament:dev_phase3_started', runDevPhase3Start);
 
-    return () => socket.disconnect();
+    const onForceOverlay = (event) => {
+      const { type, snapshot: nextSnapshot } = event.detail || {};
+      setSnapshot(nextSnapshot || null);
+      setVisible(true);
+      setStep(type || 'devPhase2');
+      setTimeout(() => setVisible(false), 2600);
+    };
+    window.addEventListener('crazy:force-overlay', onForceOverlay);
+
+    return () => {
+      socket.disconnect();
+      window.removeEventListener('crazy:force-overlay', onForceOverlay);
+    };
   }, []);
 
   if (!visible) return null;
@@ -285,11 +335,25 @@ export default function TournamentOverlay() {
         </div>
 
         <div className="tt-stage">
+          <div className="tt-tower">
+            <div
+              className="tt-lift"
+              style={{
+                bottom:
+                  step === 'phase2Complete' || step === 'devPhase3'
+                    ? '194px'
+                    : step === 'phase2' || step === 'devPhase2'
+                      ? '118px'
+                      : '38px'
+              }}
+            />
+          </div>
+
           {step === 'complete' && (
             <>
-              <p className="tt-kicker">Phase de Qualification</p>
+              <p className="tt-kicker">Open Ground</p>
               <h1 className="tt-title">PHASE 1 TERMINEE</h1>
-              <p className="tt-subtitle">Classement final verrouillé</p>
+              <p className="tt-subtitle">La base de la tour est verrouillée</p>
               <div className="tt-leaderboard">
                 {rankings.map((team, index) => (
                   <div
@@ -331,7 +395,7 @@ export default function TournamentOverlay() {
 
           {step === 'phase2' && (
             <>
-              <p className="tt-kicker">4 Equipes Restent</p>
+              <p className="tt-kicker">Ascension vers Floor 2</p>
               <h1 className="tt-title">PHASE D'ELIMINATION</h1>
               <p className="tt-subtitle">CSV Challenge Elimination Round</p>
               <p className="tt-subtitle">2 Equipes Survivront</p>
@@ -341,9 +405,9 @@ export default function TournamentOverlay() {
 
           {step === 'devPhase2' && (
             <>
-              <p className="tt-kicker">Testing Environment</p>
+              <p className="tt-kicker">Pressure Floor</p>
               <h1 className="tt-title">PHASE D'ELIMINATION</h1>
-              <p className="tt-subtitle">Les équipes qualifiées sont prêtes</p>
+              <p className="tt-subtitle">Les équipes qualifiées arrivent déjà à l'étage 2</p>
               <div className="tt-teams">
                 {qualified.slice(0, 4).map((team, index) => (
                   <div className="tt-row tt-qualified" key={team.id} style={{ animationDelay: `${index * 0.18}s` }}>
@@ -358,7 +422,7 @@ export default function TournamentOverlay() {
 
           {step === 'devPhase3' && (
             <>
-              <p className="tt-kicker">Testing Environment</p>
+              <p className="tt-kicker">Summit Access</p>
               <h1 className="tt-title">LA GRANDE FINALE</h1>
               <p className="tt-subtitle">Deux équipes, un duel final</p>
               <div className="tt-teams">
@@ -375,7 +439,7 @@ export default function TournamentOverlay() {
 
           {step === 'phase2Complete' && (
             <>
-              <p className="tt-kicker">Phase d'Elimination Terminée</p>
+              <p className="tt-kicker">Accès au Sommet</p>
               <h1 className="tt-title">2 EQUIPES QUALIFIEES</h1>
               <div className="tt-teams">
                 {phase2Scores.slice(0, 2).map((team, index) => (

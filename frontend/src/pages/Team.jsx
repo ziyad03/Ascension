@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { io } from 'socket.io-client';
 import { useNavigate } from 'react-router-dom';
+import TeamAvatar from '../components/TeamAvatar';
+import TowerRail from '../components/TowerRail';
+import { readTeamProfile } from '../components/teamIdentity';
+import '../neon-quiz.css';
 
 /* ─────────────────────────────────────────────────────────────────
    STYLES
@@ -11,16 +15,16 @@ const styles = `
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --cyan:    #06b6d4;
-    --indigo:  #6366f1;
+    --cyan:    #17e9ff;
+    --indigo:  #3d2f82;
     --red:     #ef4444;
     --green:   #22c55e;
-    --gold:    #fbbf24;
-    --bg:      #04080f;
-    --surface: rgba(8, 14, 28, 0.82);
-    --border:  rgba(255,255,255,0.065);
-    --text:    #e2e8f0;
-    --muted:   rgba(148,163,184,0.55);
+    --gold:    #fffde8;
+    --bg:      #050341;
+    --surface: rgba(6, 3, 63, 0.86);
+    --border:  rgba(23,233,255,0.18);
+    --text:    #fffde8;
+    --muted:   rgba(255,253,232,0.62);
     --radius:  22px;
   }
 
@@ -409,7 +413,7 @@ const styles = `
     text-transform: uppercase;
   }
 
-  .qtag-cat  { background: linear-gradient(135deg, #0891b2, #6366f1); color: #fff; }
+  .qtag-cat  { background: linear-gradient(135deg, #17e9ff, #3d2f82); color: #fff; }
   .qtag-pts  { background: rgba(251,191,36,0.1); color: #fbbf24; border: 1px solid rgba(251,191,36,0.28); }
   .qtag-easy { background: rgba(34,197,94,0.1);  color: #4ade80; border: 1px solid rgba(34,197,94,0.25); }
   .qtag-med  { background: rgba(251,191,36,0.1);  color: #fbbf24; border: 1px solid rgba(251,191,36,0.25); }
@@ -802,6 +806,132 @@ const styles = `
     animation: revealUp 0.5s cubic-bezier(.22,1,.36,1) both;
   }
 
+  .phase1-console {
+    grid-column: 1 / -1;
+    display: grid;
+    justify-items: center;
+    gap: 1rem;
+    padding: clamp(1rem, 3vw, 2rem);
+    min-height: calc(100dvh - 150px);
+    align-content: center;
+  }
+
+  .phase1-category {
+    color: var(--cyan);
+    font-size: clamp(0.95rem, 2.5vw, 1.35rem);
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    font-weight: 800;
+    animation: categoryPulse 1.15s ease-in-out infinite alternate;
+  }
+
+  @keyframes categoryPulse {
+    from { opacity: 0.72; text-shadow: 0 0 8px rgba(23,233,255,0.45); transform: translateY(0); }
+    to { opacity: 1; text-shadow: 0 0 22px rgba(23,233,255,0.9); transform: translateY(-3px); }
+  }
+
+  .phase1-question {
+    width: min(980px, 100%);
+    padding: clamp(1.2rem, 3vw, 2rem);
+    border-radius: 8px;
+    border: 3px solid var(--cyan);
+    background: linear-gradient(180deg, #06033f 0%, #1d347e 100%);
+    box-shadow: 0 0 24px rgba(23,233,255,0.42);
+    text-align: center;
+  }
+
+  .phase1-question h2 {
+    margin: 0;
+    font-family: 'Syne', sans-serif;
+    font-size: clamp(1.35rem, 4vw, 3.1rem);
+    line-height: 1.18;
+    color: var(--gold);
+  }
+
+  .phase1-timer {
+    width: clamp(150px, 28vw, 260px);
+    aspect-ratio: 1;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    border: 5px solid var(--cyan);
+    background: radial-gradient(circle, rgba(120,234,216,0.16), rgba(6,3,63,0.96));
+    box-shadow: 0 0 34px rgba(23,233,255,0.46), inset 0 0 26px rgba(23,233,255,0.18);
+  }
+
+  .phase1-timer span {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(4rem, 12vw, 8.5rem);
+    line-height: 0.9;
+    color: var(--gold);
+  }
+
+  .phase1-bottom {
+    width: min(760px, 100%);
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 1rem;
+    align-items: center;
+  }
+
+  .phase1-score {
+    min-height: 72px;
+    border-radius: 999px;
+    background: var(--gold);
+    color: var(--bg);
+    display: grid;
+    place-items: center;
+    font-weight: 900;
+    box-shadow: 0 12px 0 rgba(0,0,0,0.36);
+  }
+
+  .phase1-console .buzz-circle {
+    width: clamp(126px, 22vw, 184px);
+    height: clamp(126px, 22vw, 184px);
+  }
+
+  .phase1-choice {
+    width: min(760px, 100%);
+    border-radius: 8px;
+    border: 2px solid rgba(23,233,255,0.62);
+    background: rgba(6,3,63,0.76);
+    box-shadow: 0 0 20px rgba(23,233,255,0.22);
+    padding: 1rem;
+    display: grid;
+    gap: 0.75rem;
+    text-align: center;
+  }
+
+  .phase1-choice-title {
+    margin: 0;
+    color: var(--gold);
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .phase1-choice-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.65rem;
+  }
+
+  .phase1-choice-btn {
+    min-height: 54px;
+    border: 2px solid var(--cyan);
+    border-radius: 8px;
+    background: linear-gradient(180deg, rgba(120,234,216,0.16), rgba(23,233,255,0.08));
+    color: #ecfeff;
+    font-weight: 900;
+    cursor: pointer;
+  }
+
+  @media (max-width: 720px) {
+    .phase1-bottom { grid-template-columns: 1fr; justify-items: center; }
+    .phase1-score { width: 100%; }
+    .phase1-choice-row { grid-template-columns: 1fr; }
+  }
+
   .team-p2-top {
     display: flex;
     justify-content: space-between;
@@ -941,8 +1071,8 @@ function CircularTimer({ value, max = 30, danger }) {
       <svg className="timer-svg" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg">
         <defs>
           <linearGradient id="timerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%"   stopColor="#6366f1" />
-            <stop offset="100%" stopColor="#06b6d4" />
+            <stop offset="0%"   stopColor="#3d2f82" />
+            <stop offset="100%" stopColor="#17e9ff" />
           </linearGradient>
           <linearGradient id="timerGradDanger" x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%"   stopColor="#ef4444" />
@@ -1006,8 +1136,13 @@ function ParticleBurst({ active }) {
 ───────────────────────────────────────────────────────────────── */
 export default function Team() {
   const navigate = useNavigate();
+  const teamProfile = readTeamProfile();
+  const teamAvatar = localStorage.getItem('teamAvatar') || teamProfile.avatar || '';
+  const teamTag = localStorage.getItem('teamTag') || teamProfile.tag || '';
+  const teamColor = localStorage.getItem('teamColor') || teamProfile.color || '#17e9ff';
 
   const [username]    = useState(() => localStorage.getItem('username') || 'Joueur');
+  const [teamName]    = useState(() => localStorage.getItem('teamName') || localStorage.getItem('username') || 'Équipe');
   const [score,       setScore]       = useState(0);
   const [timer,       setTimer]       = useState(0);
   const [maxTimer,    setMaxTimer]    = useState(30);
@@ -1044,7 +1179,10 @@ export default function Team() {
     room: 'session-1', 
     role: 'team',
     teamId: localStorage.getItem('teamId') || `team-${Date.now()}`,
-    teamName: localStorage.getItem('username') || 'Équipe'
+    teamName,
+    tag: localStorage.getItem('teamTag') || teamProfile.tag || '',
+    color: localStorage.getItem('teamColor') || teamProfile.color || '#17e9ff',
+    avatar: localStorage.getItem('teamAvatar') || teamProfile.avatar || ''
   });
 });
 
@@ -1067,6 +1205,12 @@ export default function Team() {
       setShowParticles(false);
     });
 
+    socket.on('game:clear_question', () => {
+      setQuestion(null);
+      setHasBuzzed(false);
+      setBuzzed(false);
+    });
+
     socket.on('game:timer', (t) => setTimer(t));
 
     socket.on('game:score_update', (newScore) => {
@@ -1084,6 +1228,11 @@ export default function Team() {
 
     socket.on('tournament:state', syncTournamentState);
     socket.on('tournament:phase1_complete', syncTournamentState);
+    socket.on('phase1:test_state_updated', syncTournamentState);
+    socket.on('phase1:category_choices', (payload) => syncTournamentState(payload.snapshot || payload));
+    socket.on('phase1:category_chosen', (payload) => syncTournamentState(payload.snapshot || payload));
+    socket.on('phase1:test_reset', syncTournamentState);
+    socket.on('phase1:test_simulation_complete', syncTournamentState);
     socket.on('tournament:phase2_started', syncTournamentState);
     socket.on('phase2:challenge_started', (data) => {
       setTournament(data);
@@ -1130,7 +1279,7 @@ export default function Team() {
     socket.on('disconnect', () => setIsConnected(false));
 
     return () => socket.disconnect();
-  }, [navigate]);
+  }, [navigate, teamAvatar, teamColor, teamName, teamProfile.avatar, teamProfile.color, teamProfile.tag, teamTag]);
 
   /* ── Local countdown ── */
   useEffect(() => {
@@ -1174,6 +1323,7 @@ const handleBuzz = useCallback(async () => {
   const localTeamId = localStorage.getItem('teamId') || '';
   const phase2 = tournament?.phase2;
   const phase3 = tournament?.phase3;
+  const phase1Test = tournament?.phase1?.test || {};
   const phase2Active = tournament?.phase === 'phase2' || phase2?.active;
   const phase3Active = tournament?.phase === 'phase3' || phase3?.active;
   const phase2Challenge = phase2?.currentChallenge;
@@ -1184,6 +1334,10 @@ const handleBuzz = useCallback(async () => {
   const eliminatedPhase2 = phase2Active && !canPlayPhase2;
   const canPlayPhase3 = phase3Active && phase3?.finalists?.some(team => String(team.id) === String(localTeamId));
   const eliminatedPhase3 = phase3Active && !canPlayPhase3;
+  const canChoosePhase1Category = !phase2Active
+    && !phase3Active
+    && phase1Test.pendingCategoryChoice
+    && String(phase1Test.roundWinner?.id || '') === String(localTeamId);
   const myPenaltyCount = phase2Me?.penalties || 0;
   const myHintCount = phase2Me?.hintsUsed || 0;
   const qualifiedCount = phase2?.qualifiedTeams?.length || 0;
@@ -1201,7 +1355,7 @@ const handleBuzz = useCallback(async () => {
 
     socketRef.current?.emit('phase2:submit_answer', {
       teamId: localTeamId,
-      teamName: username,
+      teamName,
       answer: phase2Answer
     });
   };
@@ -1210,7 +1364,15 @@ const handleBuzz = useCallback(async () => {
     if (!canPlayPhase2 || !phase2Challenge) return;
     socketRef.current?.emit('phase2:request_hint', {
       teamId: localTeamId,
-      teamName: username
+      teamName
+    });
+  };
+
+  const choosePhase1Category = (category) => {
+    if (!canChoosePhase1Category) return;
+    socketRef.current?.emit('phase1:choose_category', {
+      category,
+      teamId: localTeamId
     });
   };
   /* ── Derived ── */
@@ -1238,7 +1400,7 @@ const handleBuzz = useCallback(async () => {
       <div className="orb orb-2" />
       <div className="orb orb-3" />
 
-      <div className="tr">
+      <div className={`tr ${!phase2Active && !phase3Active ? 'phase1-only' : ''}`}>
         <div className="tr-inner">
 
           {/* ── Header ── */}
@@ -1250,8 +1412,8 @@ const handleBuzz = useCallback(async () => {
                 </svg>
               </div>
               <div>
-                <p className="brand-name">Espace Équipe</p>
-                <p className="brand-sub">Quiz en direct</p>
+                <p className="brand-name">Deck d'Ascension</p>
+                <p className="brand-sub">Votre course dans Tournament Tower</p>
               </div>
             </div>
             <div className={`conn-pill ${isConnected ? 'online' : ''}`}>
@@ -1259,6 +1421,17 @@ const handleBuzz = useCallback(async () => {
               {isConnected ? 'En ligne' : 'Déconnecté'}
             </div>
           </div>
+
+          {(phase2Active || phase3Active) && (
+          <div className="gc" style={{ padding: '0.4rem', borderRadius: '24px' }}>
+            <TowerRail
+              phase={tournament?.phase || 'phase1'}
+              compact
+              title={teamName}
+              subtitle={phase3Active ? 'Sommet en vue' : phase2Active ? "Vous êtes dans l'étage sous pression." : "Répondez, montez, survivez."}
+            />
+          </div>
+          )}
 
           {phase3Active && (
             <div className="gc team-p2">
@@ -1395,33 +1568,114 @@ const handleBuzz = useCallback(async () => {
             </div>
           )}
 
-          {/* ── Question ── */}
-          <div className="area-question">
-            {question ? (
-              <div className="gc gc-cyan q-card q-enter" key={question.id}>
-                <div className="q-tags">
-                  <span className="qtag qtag-cat">{question.category}</span>
-                  <span className="qtag qtag-pts">{question.points} pts</span>
-                  <span className={`qtag ${diffCls}`}>{diffLbl}</span>
-                </div>
-                <p className="q-text">
-                  {question.text || question.question || 'Chargement...'}
-                </p>
-                {question.imageUrl && (
-                  <img src={question.imageUrl} alt="Illustration" className="q-img" />
-                )}
+          {!phase2Active && !phase3Active && (
+            <div className="phase1-console">
+              <div className="phase1-category" key={question?.category || 'waiting'}>
+                {question?.category || 'En attente'}
               </div>
+              <div className="phase1-question">
+                <h2>{question?.text || "En attente d'une question du modérateur..."}</h2>
+              </div>
+              {phase1Test.pendingCategoryChoice && (
+                <div className="phase1-choice">
+                  <p className="phase1-choice-title">
+                    {canChoosePhase1Category
+                      ? 'Choisis la prochaine categorie'
+                      : `${phase1Test.roundWinner?.name || 'Le gagnant'} choisit la prochaine categorie`}
+                  </p>
+                  {canChoosePhase1Category && (
+                    <div className="phase1-choice-row">
+                      {(phase1Test.nextCategoryChoices || []).map((category) => (
+                        <button
+                          key={category}
+                          className="phase1-choice-btn"
+                          onClick={() => choosePhase1Category(category)}
+                        >
+                          {category}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="phase1-timer">
+                <span>{timer}</span>
+              </div>
+              <div className="phase1-bottom">
+                <div className="phase1-score">Score: {score}</div>
+                <button
+                  className={`buzz-btn ${buzzed ? 'buzzed' : ''}`}
+                  onClick={handleBuzz}
+                  disabled={btnDisabled}
+                  aria-label="Buzzer"
+                >
+                  <div className="buzz-glow" />
+                  {!btnDisabled && (
+                    <div className="buzz-rings">
+                      <div className="buzz-ring" />
+                      <div className="buzz-ring" />
+                      <div className="buzz-ring" />
+                    </div>
+                  )}
+                  <div className="buzz-circle">
+                    <div className="buzz-scan" />
+                    <ParticleBurst active={showParticles} />
+                    <div className="buzz-icon">
+                      <svg width="38" height="38" fill="none" stroke="#fff" strokeWidth="2" viewBox="0 0 24 24">
+                        {buzzed
+                          ? <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                          : <path d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+                        }
+                      </svg>
+                    </div>
+                    <span className="buzz-label">{buzzed ? 'BUZZÉ' : 'BUZZ'}</span>
+                    {!buzzed && <span className="buzz-sub">Appuyez</span>}
+                  </div>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ── Question ── */}
+          {(phase2Active || phase3Active) && <div className="area-question">
+            {question ? (
+              <>
+                <div className="neon-q-card" key={question.id}>
+                  <div className="neon-quiz-badge">QUIZ</div>
+                  <div className="q-tags">
+                    <span className="qtag qtag-cat">{question.category}</span>
+                    <span className="qtag qtag-pts">{question.points} pts</span>
+                    <span className={`qtag ${diffCls}`}>{diffLbl}</span>
+                  </div>
+                  <p className="neon-q-text">
+                    {question.text || question.question || 'Chargement...'}
+                  </p>
+                  {question.imageUrl && (
+                    <img src={question.imageUrl} alt="Illustration" className="q-img" />
+                  )}
+                </div>
+                {Array.isArray(question.options) && question.options.length > 0 && (
+                  <div className="neon-options-grid">
+                    {question.options.map((opt, i) => (
+                      <div key={i} className="neon-option-pill">
+                        {opt}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             ) : (
-              <div className="gc" style={{ padding:'1.4rem 1.6rem', borderRadius:'var(--radius)', animation:'revealUp 0.5s 0.15s cubic-bezier(.22,1,.36,1) both' }}>
-                <p style={{ color:'var(--muted)', fontSize:'0.85rem', textAlign:'center' }}>
+              <div className="neon-q-card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '180px' }}>
+                <div className="neon-quiz-badge">QUIZ</div>
+                <p style={{ color:'rgba(255,255,255,0.6)', fontSize:'1.1rem', textAlign:'center', fontWeight: 'bold' }}>
                   En attente d'une question du modérateur…
                 </p>
               </div>
             )}
-          </div>
+          </div>}
 
           {/* ── Stats ── */}
-          <div className="stats-row area-stats">
+          {(phase2Active || phase3Active) && <div className="stats-row area-stats">
 
             {/* Score */}
             <div className="gc gc-gold stat-card" ref={scoreRef}>
@@ -1448,7 +1702,7 @@ const handleBuzz = useCallback(async () => {
             {/* Status */}
             <div className={`gc ${hasBuzzed ? 'gc-green' : question ? 'gc-cyan' : ''} stat-card`}>
               <div className="stat-icon-wrap" style={{ background: hasBuzzed ? 'linear-gradient(135deg,rgba(34,197,94,0.2),rgba(6,182,212,0.15))' : 'linear-gradient(135deg,rgba(99,102,241,0.2),rgba(6,182,212,0.15))' }}>
-                <svg width="20" height="20" fill="none" stroke={hasBuzzed ? '#4ade80' : '#06b6d4'} strokeWidth="2.2" viewBox="0 0 24 24">
+                <svg width="20" height="20" fill="none" stroke={hasBuzzed ? '#78ead8' : '#17e9ff'} strokeWidth="2.2" viewBox="0 0 24 24">
                   {hasBuzzed
                     ? <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                     : <path d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
@@ -1462,10 +1716,10 @@ const handleBuzz = useCallback(async () => {
               <p className="stat-sub">{hasBuzzed ? 'Premier !' : question ? 'Vite !' : 'En attente'}</p>
             </div>
 
-          </div>
+          </div>}
 
           {/* ── Buzz ── */}
-          <div className="gc gc-red buzz-section area-buzz">
+          {(phase2Active || phase3Active) && <div className="gc gc-red buzz-section area-buzz">
 
             {!question ? (
               <div className="waiting-pill">
@@ -1517,14 +1771,14 @@ const handleBuzz = useCallback(async () => {
                 Dépêchez-vous !
               </p>
             )}
-          </div>
+          </div>}
 
           {/* ── User bar ── */}
           <div className="gc user-bar area-userbar">
-            <div className="user-avatar">{username.charAt(0).toUpperCase()}</div>
+            <TeamAvatar name={teamName} avatar={teamAvatar} color={teamColor} tag={teamTag} size={44} />
             <div>
-              <p className="user-name">{username}</p>
-              <p className="user-role">Membre de l'équipe</p>
+              <p className="user-name">{teamName}</p>
+              <p className="user-role">{teamTag ? `${teamTag} · ` : ''}{username}</p>
             </div>
             <div className="user-status">
               <span className={`conn-dot ${isConnected ? 'on' : 'off'}`} style={{ width:'5px', height:'5px' }} />
