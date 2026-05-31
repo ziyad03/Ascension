@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import TeamAvatar from '../components/TeamAvatar';
-import TowerRail from '../components/TowerRail';
 
 const API_BASE = import.meta.env.VITE_BACKEND_URL || 'http://localhost:10000';
 
@@ -120,6 +119,53 @@ const styles = `
     justify-content: center;
     font-weight: 800;
     font-size: 1rem;
+  }
+
+  .timer-pill.paused {
+    border-color: rgba(251, 191, 36, 0.45);
+    color: #fde68a;
+    box-shadow: 0 0 18px rgba(251, 191, 36, 0.18);
+  }
+
+  .team-score.score-flash {
+    animation: scoreFlash 0.65s cubic-bezier(.22,1,.36,1);
+    color: #4ade80 !important;
+  }
+
+  @keyframes scoreFlash {
+    0% { transform: scale(1); }
+    40% { transform: scale(1.18); }
+    100% { transform: scale(1); }
+  }
+
+  .answer-card.correct-pop {
+    animation: correctPop 0.55s ease;
+    border-color: rgba(74, 222, 128, 0.45);
+    box-shadow: 0 0 24px rgba(34, 197, 94, 0.18);
+  }
+
+  @keyframes correctPop {
+    0% { transform: scale(0.98); opacity: 0.85; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+
+  .score-toast {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 90;
+    padding: 0.75rem 1rem;
+    border-radius: 14px;
+    border: 1px solid rgba(74, 222, 128, 0.45);
+    background: rgba(6, 24, 16, 0.92);
+    color: #bbf7d0;
+    font-weight: 700;
+    animation: toastIn 0.45s ease;
+  }
+
+  @keyframes toastIn {
+    from { transform: translateY(-8px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
   }
 
   .simple-grid {
@@ -468,10 +514,13 @@ const PHASE1_CATEGORIES = [
   'Technology',
   'Programming',
   'Web Development',
+  'Mobile Development',
   'Databases',
   'Networking',
   'Cybersecurity',
   'Artificial Intelligence',
+  'Machine Learning',
+  'Cloud Computing',
   'Science',
   'Mathematics',
   'Logic',
@@ -479,10 +528,13 @@ const PHASE1_CATEGORIES = [
   'Geography',
   'Economics',
   'Business',
+  'Entrepreneurship',
   'Startups',
   'Engineering',
+  'Electronics',
   'Culture',
   'Cinema',
+  'Literature',
   'Sports',
   'General Knowledge',
   'Mixed Challenges'
@@ -496,6 +548,9 @@ export default function Moderator() {
   const [teams, setTeams] = useState([]);
   const [timer, setTimer] = useState(30);
   const [maxTimer, setMaxTimer] = useState(30);
+  const [timerPaused, setTimerPaused] = useState(false);
+  const [scoreFlashIds, setScoreFlashIds] = useState([]);
+  const [scoreToast, setScoreToast] = useState(null);
   const [tournament, setTournament] = useState(null);
   const [packs, setPacks] = useState([]);
   const [csvFile, setCsvFile] = useState(null);
@@ -510,13 +565,68 @@ export default function Moderator() {
   const [phase1TestSpeed, setPhase1TestSpeed] = useState('5x');
   const [phase1TestStatus, setPhase1TestStatus] = useState('');
   const [phase1Category, setPhase1Category] = useState('Mixed Challenges');
+  const [ollamaStatus, setOllamaStatus] = useState({ ready: false, modelAvailable: false });
+  const [phase2RoundType, setPhase2RoundType] = useState('random');
+  const [phase2PackGenStatus, setPhase2PackGenStatus] = useState('');
+
+  const PHASE2_ROUND_TYPES = [
+    { value: 'random', label: 'Random (50%)' },
+    { value: 'standard', label: 'Standard' },
+    { value: 'double_points', label: 'Double Points (+20)' },
+    { value: 'fastest_bonus', label: 'Fast Answer Bonus (+12)' },
+    { value: 'risk_round', label: 'Risk Round (wager)' },
+    { value: 'sudden_question', label: 'Sudden Question (half timer)' },
+    { value: 'no_hint', label: 'No Hint Round' },
+    { value: 'mystery_challenge', label: 'Mystery Challenge' }
+  ];
 
   const socketRef = useRef(null);
+
+  const refreshOllamaStatus = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/ai/ollama/status`);
+      const data = await res.json();
+      setOllamaStatus(data || { ready: false, modelAvailable: false });
+      return data;
+    } catch {
+      setOllamaStatus({ ready: false, modelAvailable: false, error: 'Status check failed' });
+      return null;
+    }
+  };
 
   const loadPacks = async () => {
     const res = await fetch(`${API_BASE}/api/phase2/packs`);
     const data = await res.json();
     setPacks(Array.isArray(data) ? data : []);
+  };
+
+  const generatePhase2OllamaPack = async () => {
+    setPhase2PackGenStatus('Generating 7 Ollama questions (1 per round type)...');
+    try {
+      const res = await fetch(`${API_BASE}/api/phase2/packs/generate-mock-ollama`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setPhase2PackGenStatus(data?.error || 'Ollama pack generation failed');
+        return;
+      }
+      await loadPacks();
+      const firstChallenge = data?.pack?.challenges?.[0];
+      if (firstChallenge) {
+        setSelectedChallenge(firstChallenge);
+        if (firstChallenge.recommendedModifier) {
+          setPhase2RoundType(firstChallenge.recommendedModifier);
+        }
+      }
+      setPhase2PackGenStatus(
+        `Ollama pack ready · ${data.ollamaCount || 0} AI · ${data.fallbackCount || 0} fallback · ${data.pack?.challengeCount || 0} challenges`
+      );
+    } catch (error) {
+      setPhase2PackGenStatus(error.message || 'Ollama pack generation failed');
+    }
   };
 
   useEffect(() => {
@@ -527,7 +637,88 @@ export default function Moderator() {
     socket.emit('join', { room: 'moderator-session', role: 'moderator' });
 
     socket.on('game:answer_received', (data) => setAnswers((prev) => [...prev, data]));
-    socket.on('score:refresh', (data) => setTeams(data.teams || []));
+
+    const applyScoreFlash = (payload) => {
+      if (!payload?.teamId) return;
+      setScoreFlashIds((prev) => [...new Set([...prev, String(payload.teamId)])]);
+      setTimeout(() => {
+        setScoreFlashIds((prev) => prev.filter((id) => id !== String(payload.teamId)));
+      }, 700);
+      if (payload.correct) {
+        setScoreToast(`${payload.teamName || 'Team'} · +${payload.delta || 0} pts`);
+        setTimeout(() => setScoreToast(null), 1800);
+      }
+    };
+
+    const mergeScoreUpdate = (payload) => {
+      if (!payload?.teamId) return;
+      setTeams((prev) => {
+        const list = [...prev];
+        const index = list.findIndex((team) => String(team.id) === String(payload.teamId));
+        if (index >= 0) {
+          list[index] = { ...list[index], score: payload.score ?? list[index].score };
+          return list;
+        }
+        return prev;
+      });
+      setTournament((prev) => {
+        if (!prev) return prev;
+        if (payload.phase === 'phase2' && prev.phase2?.scores?.length) {
+          return {
+            ...prev,
+            phase2: {
+              ...prev.phase2,
+              scores: prev.phase2.scores.map((team) => (
+                String(team.id) === String(payload.teamId)
+                  ? { ...team, score: payload.score ?? team.score }
+                  : team
+              ))
+            }
+          };
+        }
+        if (prev.phase1?.rankings?.length) {
+          return {
+            ...prev,
+            phase1: {
+              ...prev.phase1,
+              rankings: prev.phase1.rankings.map((team) => (
+                String(team.id) === String(payload.teamId)
+                  ? { ...team, score: payload.score ?? team.score }
+                  : team
+              ))
+            }
+          };
+        }
+        return prev;
+      });
+      applyScoreFlash(payload);
+    };
+
+    socket.on('score:refresh', (data) => {
+      if (data?.teams?.length) setTeams(data.teams);
+    });
+
+    socket.on('score:update', mergeScoreUpdate);
+    socket.on('game:answer_result', mergeScoreUpdate);
+
+    socket.on('game:timer', (payload) => {
+      if (payload && typeof payload === 'object' && payload.phase === 'phase1') {
+        if (Number.isFinite(Number(payload.timeLeft))) setTimer(Number(payload.timeLeft));
+        return;
+      }
+      if (typeof payload === 'number') setTimer(payload);
+    });
+
+    socket.on('game:timer_stop', ({ timeLeft, phase }) => {
+      if (phase === 'phase2') return;
+      if (Number.isFinite(Number(timeLeft))) setTimer(Number(timeLeft));
+      setTimerPaused(true);
+    });
+
+    socket.on('buzz:first', ({ buzzTime }) => {
+      if (Number.isFinite(Number(buzzTime))) setTimer(Number(buzzTime));
+      setTimerPaused(true);
+    });
 
     const syncTournament = (data) => setTournament(data);
     const syncPhase1Test = (payload) => {
@@ -567,10 +758,21 @@ export default function Moderator() {
       syncPhase1Test(payload);
       setPhase1TestStatus(`Round ${payload.roundNumber || 1} · ${payload.category || 'Category'} · ${payload.questions?.length || 0} questions loaded`);
     });
+    socket.on('phase1:category_bank_regenerated', (payload) => {
+      setQuestions(payload.questions || []);
+      syncPhase1Test(payload);
+      if (payload.ollama?.modelAvailable) {
+        setPhase1TestStatus(`Ollama phi3 · ${payload.count || 0} questions · ${payload.category || phase1Category}`);
+      } else {
+        setPhase1TestStatus(`Local bank fallback · ${payload.count || 0} questions · ${payload.category || phase1Category}`);
+      }
+      refreshOllamaStatus().catch(() => {});
+    });
     socket.on('phase1:test_question_started', (payload) => {
       setCurrentQuestion(payload.question || null);
       setTimer(payload.question?.timeLimit || 30);
       setMaxTimer(payload.question?.timeLimit || 30);
+      setTimerPaused(false);
       setAnswers([]);
       syncPhase1Test(payload);
     });
@@ -643,6 +845,8 @@ export default function Moderator() {
       })
       .catch(() => {});
 
+    refreshOllamaStatus().catch(() => {});
+
     return () => {
       cancelled = true;
       socket.disconnect();
@@ -668,10 +872,10 @@ export default function Moderator() {
   }, [devStatus.enabled]);
 
   useEffect(() => {
-    if (!sessionActive || timer <= 0 || tournament?.phase === 'phase2') return undefined;
+    if (!sessionActive || timer <= 0 || tournament?.phase === 'phase2' || timerPaused) return undefined;
     const id = setInterval(() => setTimer((value) => Math.max(0, value - 1)), 1000);
     return () => clearInterval(id);
-  }, [sessionActive, timer, tournament?.phase]);
+  }, [sessionActive, timer, tournament?.phase, timerPaused]);
 
   const startSession = () => {
     setSessionActive(true);
@@ -705,6 +909,7 @@ export default function Moderator() {
     setAnswers([]);
     setTimer(question.timeLimit || 20);
     setMaxTimer(question.timeLimit || 20);
+    setTimerPaused(false);
   };
 
   const previewCsv = async () => {
@@ -798,7 +1003,13 @@ export default function Moderator() {
   const endPhase1 = () => socketRef.current?.emit('phase1:end');
   const startPhase2 = () => socketRef.current?.emit('phase2:start');
   const pausePhase2 = () => socketRef.current?.emit('phase2:pause', { paused: !tournament?.phase2?.paused });
-  const startPhase2Challenge = () => selectedChallenge && socketRef.current?.emit('phase2:start_challenge', { challengeId: selectedChallenge.id });
+  const startPhase2Challenge = () => {
+    if (!selectedChallenge) return;
+    socketRef.current?.emit('phase2:start_challenge', {
+      challengeId: selectedChallenge.id,
+      modifier: phase2RoundType
+    });
+  };
   const endRound = () => socketRef.current?.emit('phase2:end_round');
   const skipChallenge = () => socketRef.current?.emit('phase2:skip_challenge');
   const forceNextRound = () => socketRef.current?.emit('phase2:force_next_round');
@@ -808,12 +1019,25 @@ export default function Moderator() {
   const endPhase2 = () => socketRef.current?.emit('phase2:end');
   const forceQualification = () => devTeamTarget && socketRef.current?.emit('dev:force_qualification', { teamId: devTeamTarget });
   const forceElimination = () => devTeamTarget && socketRef.current?.emit('dev:force_elimination', { teamId: devTeamTarget });
-  const generatePhase1Questions = () => {
-    setPhase1TestStatus('Loading 5 questions...');
+  const generatePhase1Questions = (shuffle = false) => {
+    const shouldShuffle = shuffle === true;
+    setPhase1TestStatus(shouldShuffle ? 'Drawing 10 new questions...' : 'Loading 10 questions...');
     socketRef.current?.emit('phase1:test_generate_questions', {
       category: phase1Category,
       startImmediately: false,
-      fast: true
+      fast: true,
+      shuffle: shouldShuffle
+    });
+  };
+  const regeneratePhase1Bank = async () => {
+    setPhase1TestStatus(`Generating ${phase1Category} bank via Ollama phi3...`);
+    const status = await refreshOllamaStatus();
+    if (!status?.modelAvailable) {
+      setPhase1TestStatus(status?.error || 'Ollama phi3 unavailable — using local bank fallback');
+    }
+    socketRef.current?.emit('phase1:test_regenerate_category_bank', {
+      category: phase1Category,
+      targetCount: 50
     });
   };
   const generatePhase1MockTeams = () => {
@@ -870,10 +1094,12 @@ export default function Moderator() {
     setAnswers((prev) => prev.filter((entry) => entry.id !== answer.id));
   };
 
-  const sortedTeams = useMemo(
-    () => [...teams].sort((a, b) => (b.score || 0) - (a.score || 0)),
-    [teams]
-  );
+  const sortedTeams = useMemo(() => {
+    if (['phase2', 'phase2_complete'].includes(tournament?.phase) && tournament?.phase2?.scores?.length) {
+      return [...tournament.phase2.scores].sort((a, b) => (b.score || 0) - (a.score || 0));
+    }
+    return [...teams].sort((a, b) => (b.score || 0) - (a.score || 0));
+  }, [teams, tournament]);
 
   const flatChallenges = useMemo(
     () => packs.flatMap((pack) => (pack.challenges || []).map((challenge) => ({ ...challenge, packName: pack.name }))),
@@ -898,12 +1124,13 @@ export default function Moderator() {
     <>
       <style>{styles}</style>
       <div className="mod-root">
+        {scoreToast && <div className="score-toast">{scoreToast}</div>}
         <div className="mod-shell">
           <header className="mod-header">
             <div>
-              <div className="mod-kicker">Tournament Control Deck</div>
-              <h1 className="mod-title">Moderator</h1>
-              <p className="mod-sub">Moins de panneaux, actions directes, etat de partie clair.</p>
+              <div className="mod-kicker">ISGA Summit Challenge</div>
+              <h1 className="mod-title">Moderator Control</h1>
+              <p className="mod-sub">Actions directes, phase active, validation lisible.</p>
             </div>
 
             <div className="mod-badges">
@@ -912,24 +1139,12 @@ export default function Moderator() {
                 {sessionActive ? 'Session active' : 'Session arretee'}
               </div>
               <div className="mod-badge">{tournament?.phase || 'phase1'}</div>
-              <div className="mod-badge timer-pill">{displayTimer}s / {timerCap}s</div>
+              <div className={`mod-badge timer-pill ${timerPaused ? 'paused' : ''}`}>{displayTimer}s / {timerCap}s</div>
+              <div className={`mod-badge ${ollamaStatus.modelAvailable ? '' : 'off'}`}>
+                {ollamaStatus.modelAvailable ? 'Ollama phi3 ready' : 'Ollama offline'}
+              </div>
             </div>
           </header>
-
-          <div className="mod-panel" style={{ padding: '0.55rem' }}>
-            <TowerRail
-              phase={tournament?.phase || 'phase1'}
-              compact
-              title="Tournoi"
-              subtitle={
-                tournament?.phase === 'phase2'
-                  ? "Le floor 2 est en cours."
-                  : tournament?.phase === 'phase3'
-                    ? 'Le sommet est ouvert.'
-                    : 'Le floor 1 pilote la qualification.'
-              }
-            />
-          </div>
 
           <div className="simple-grid">
             <div className="column">
@@ -962,15 +1177,38 @@ export default function Moderator() {
 
                 <div className="feed-card">
                   <div className="item-title">Phase 1 setup</div>
-                  <select
-                    className="select"
-                    value={phase1Category}
-                    onChange={(event) => setPhase1Category(event.target.value)}
-                  >
-                    {PHASE1_CATEGORIES.map((category) => (
-                      <option key={category} value={category}>{category}</option>
-                    ))}
-                  </select>
+                  <div className="feed-copy" style={{ marginBottom: '0.65rem' }}>
+                    Question bank: {tournament?.phase1?.test?.categoryBankSource || 'not generated'} ·
+                    {' '}{tournament?.phase1?.test?.categoryBankSize || 0} stored ·
+                    {' '}{ollamaStatus.modelAvailable ? 'Ollama phi3 connected' : (ollamaStatus.error || 'Ollama not connected')}
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.6rem' }}>
+                    <select
+                      className="select"
+                      value={phase1Category}
+                      onChange={(event) => setPhase1Category(event.target.value)}
+                      style={{ flex: 1, minWidth: '150px' }}
+                    >
+                      {PHASE1_CATEGORIES.map((category) => (
+                        <option key={category} value={category}>{category}</option>
+                      ))}
+                    </select>
+                    <button
+                      className="action-btn gold"
+                      onClick={() => {
+                        setPhase1TestStatus('Drawing 10 new questions...');
+                        socketRef.current?.emit('phase1:test_generate_questions', {
+                          category: phase1Category,
+                          startImmediately: false,
+                          fast: true,
+                          shuffle: true
+                        });
+                      }}
+                      style={{ whiteSpace: 'nowrap', padding: '0.8rem 1rem' }}
+                    >
+                      Shuffle Category
+                    </button>
+                  </div>
                 </div>
 
                 {tournament?.phase1?.test?.pendingCategoryChoice && (
@@ -994,7 +1232,9 @@ export default function Moderator() {
 
                 <div className="button-row">
                   <button className="action-btn green" onClick={startSession} disabled={sessionActive}>Announce Phase 1</button>
-                  <button className="action-btn primary" onClick={generatePhase1Questions}>Load 5 Questions</button>
+                  <button className="action-btn primary" onClick={() => generatePhase1Questions()}>Load 10 Questions</button>
+                  <button className="action-btn" onClick={() => generatePhase1Questions(true)}>Shuffle Questions</button>
+                  <button className="action-btn" onClick={() => regeneratePhase1Bank()}>Generate Bank (Ollama)</button>
                   <button className="action-btn" onClick={stopSession} disabled={!sessionActive}>Pause</button>
                   <button className="action-btn" onClick={skipPhase1Question}>Next Question</button>
                   <button className="action-btn" onClick={finishPhase1Round}>Finish Round</button>
@@ -1080,7 +1320,13 @@ export default function Moderator() {
                     <div className="button-row">
                       <button className="action-btn" onClick={previewCsv} disabled={!csvFile}>Previsualiser</button>
                       <button className="action-btn green" onClick={importCsv} disabled={!csvFile}>Importer pack</button>
+                      <button className="action-btn gold" onClick={generatePhase2OllamaPack}>Generate Ollama Test Pack</button>
                     </div>
+                    {phase2PackGenStatus && (
+                      <div className="feed-card">
+                        <div className="feed-copy">{phase2PackGenStatus}</div>
+                      </div>
+                    )}
                     {csvPreview && (
                       <div className="feed-card">
                         <div className="item-title">
@@ -1101,6 +1347,18 @@ export default function Moderator() {
                   </div>
 
                   <div className="stack">
+                    <label className="panel-copy" style={{ display: 'grid', gap: '0.35rem' }}>
+                      Round type (test)
+                      <select
+                        className="select"
+                        value={phase2RoundType}
+                        onChange={(event) => setPhase2RoundType(event.target.value)}
+                      >
+                        {PHASE2_ROUND_TYPES.map((entry) => (
+                          <option key={entry.value} value={entry.value}>{entry.label}</option>
+                        ))}
+                      </select>
+                    </label>
                     <div className="button-row">
                       <button className="action-btn primary" onClick={startPhase2Challenge} disabled={!selectedChallenge}>Lancer challenge</button>
                       <button className="action-btn" onClick={endRound}>Fin round</button>
@@ -1118,6 +1376,12 @@ export default function Moderator() {
                       <div className="feed-copy">
                         Challenge actif: {activeChallenge?.question || 'aucun'}
                       </div>
+                      <div className="feed-copy">
+                        Modifier: {tournament?.phase2?.modifierLabel || 'Standard'}
+                        {tournament?.phase2?.mysteryResolved
+                          ? ` → ${tournament.phase2.modifier}`
+                          : ''}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1134,6 +1398,9 @@ export default function Moderator() {
                       className={`challenge-item ${selectedChallenge?.id === challenge.id ? 'active' : ''}`}
                       onClick={() => {
                         setSelectedChallenge(challenge);
+                        if (challenge.recommendedModifier) {
+                          setPhase2RoundType(challenge.recommendedModifier);
+                        }
                         setChallengeDraft({
                           id: challenge.id,
                           packId: challenge.packId,
@@ -1158,6 +1425,9 @@ export default function Moderator() {
                         <span className="mini-pill gold">{challenge.points ?? 10} pts</span>
                         <span className="mini-pill red">{challenge.penalty ?? -1}</span>
                         <span className="mini-pill">{challenge.difficulty || 'Medium'}</span>
+                        {challenge.modifierLabel && (
+                          <span className="mini-pill cyan">{challenge.modifierLabel}</span>
+                        )}
                       </div>
                     </button>
                   ))}
@@ -1268,7 +1538,7 @@ export default function Moderator() {
                         <div className="team-name">#{index + 1} {team.name}</div>
                         <div className="team-sub">{team.tag || `Equipe ${team.id}`}</div>
                       </div>
-                      <div className="team-score">{team.score ?? 0}</div>
+                      <div className={`team-score ${scoreFlashIds.includes(String(team.id)) ? 'score-flash' : ''}`}>{team.score ?? 0}</div>
                     </div>
                   ))}
                 </div>
@@ -1371,20 +1641,21 @@ export default function Moderator() {
 
           {devStatus.enabled && devPanelOpen && (
             <section className="dev-drawer">
-              <div className="panel-head">
-                <div>
-                  <h2 className="panel-title">Floor 1 Testing</h2>
-                  <p className="panel-copy">Cache par defaut. Raccourci: Ctrl + Shift + M. Ces actions ne touchent pas aux moteurs Floor 2 et Floor 3.</p>
-                </div>
+                <div className="panel-head">
+                  <div>
+                    <h2 className="panel-title">Qualification Testing</h2>
+                    <p className="panel-copy">Cache par défaut. Raccourci: Ctrl + Shift + M. Les actions restent limitées à la qualification.</p>
+                  </div>
                 {phase1TestStatus && <div className="mini-pill cyan">{phase1TestStatus}</div>}
               </div>
 
               <div className="dev-grid">
                 <div className="dev-box">
                   <div className="dev-title">Generate</div>
-                  <button className="action-btn primary" onClick={generatePhase1Questions}>Generate Test Questions</button>
+                  <button className="action-btn primary" onClick={() => generatePhase1Questions()}>Generate 10 Questions</button>
                   <button className="action-btn" onClick={generatePhase1MockTeams}>Generate Mock Teams</button>
                   <button className="action-btn" onClick={autoAnswerPhase1}>Auto Answer</button>
+                  <button className="action-btn" onClick={() => regeneratePhase1Bank()}>Generate Rankings Bank</button>
                 </div>
 
                 <div className="dev-box">

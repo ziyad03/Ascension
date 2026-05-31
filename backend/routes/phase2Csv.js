@@ -3,10 +3,48 @@ const multer = require('multer');
 const csv = require('csv-parser');
 const { Readable } = require('stream');
 const { PrismaClient } = require('@prisma/client');
+const phase2LocalStore = require('../services/phase2LocalStore');
+const { generatePhase2RoundTestPack } = require('../services/ai/phase2ChallengeGenerator');
 
 const router = express.Router();
 const prisma = new PrismaClient();
 const upload = multer({ storage: multer.memoryStorage() });
+
+const OLLAMA_ENDPOINT = process.env.OLLAMA_ENDPOINT || 'http://localhost:11434';
+
+async function generateAIHint(question, answer, difficulty = 'Medium') {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+
+    const response = await fetch(`${OLLAMA_ENDPOINT}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: 'phi3:latest',
+        prompt: `Tu es un assistant de quiz de haut niveau. Génère un indice utile en français pour la question suivante sans JAMAIS révéler la réponse.
+Question: "${question}"
+Réponse: "${answer}"
+Difficulté: ${difficulty}
+L'indice doit être subtil, axé sur le raisonnement ou l'étymologie, et faire maximum 12 mots. Ne donne aucune explication avant ou après, retourne uniquement l'indice brut.`,
+        stream: false,
+        options: { temperature: 0.4, num_predict: 50 }
+      })
+    }).finally(() => clearTimeout(timeout));
+
+    if (response.ok) {
+      const data = await response.json();
+      const hint = String(data.response || '').trim().replace(/^"|"$/g, '');
+      if (hint && !hint.toLowerCase().includes(String(answer).toLowerCase())) {
+        return hint;
+      }
+    }
+  } catch (err) {
+    console.warn('AI Hint generation failed, using procedural fallback:', err.message);
+  }
+  return null;
+}
 
 const REQUIRED_FIELDS = [
   'question',
@@ -172,15 +210,71 @@ router.post('/packs/import', upload.single('file'), async (req, res) => {
 });
 
 router.get('/packs', async (req, res) => {
+  const localPacks = phase2LocalStore.listPacks();
+
   try {
     const packs = await prisma.challengePack.findMany({
       orderBy: { createdAt: 'desc' },
       include: { challenges: { orderBy: { id: 'asc' } } }
     });
-    res.json(packs);
+    res.json([...localPacks, ...packs]);
   } catch (error) {
-    console.error('Erreur packs Phase 2:', error);
-    res.status(500).json({ error: 'Erreur recuperation packs' });
+    console.warn('Phase 2 DB packs unavailable, using local store:', error.message);
+    res.json(localPacks);
+  }
+});
+
+router.post('/packs/generate-mock-ollama', async (req, res) => {
+  try {
+    const generated = await generatePhase2RoundTestPack({
+      modifiers: req.body?.modifiers
+    });
+
+    phase2LocalStore.clearGeneratedPacks();
+    const pack = phase2LocalStore.savePack({
+      name: generated.name,
+      source: generated.source,
+      challenges: generated.challenges
+    });
+
+    let dbPack = null;
+    try {
+      dbPack = await prisma.challengePack.create({
+        data: {
+          name: pack.name,
+          sourceFilename: 'ollama-round-test.json',
+          challengeCount: pack.challenges.length,
+          challenges: {
+            create: pack.challenges.map((challenge) => ({
+              question: challenge.question,
+              answer: challenge.answer,
+              hint: challenge.hint,
+              category: challenge.category,
+              difficulty: challenge.difficulty,
+              points: challenge.points,
+              penalty: challenge.penalty,
+              timeLimit: challenge.timeLimit
+            }))
+          }
+        },
+        include: { challenges: true }
+      });
+    } catch (error) {
+      console.warn('Phase 2 DB pack save skipped:', error.message);
+    }
+
+    res.status(201).json({
+      message: 'Pack de test Ollama genere (1 question par type de round)',
+      pack,
+      dbPack,
+      ollama: generated.ollamaStatus,
+      ollamaCount: generated.ollamaCount,
+      fallbackCount: generated.count - generated.ollamaCount,
+      modifiers: generated.modifiers
+    });
+  } catch (error) {
+    console.error('Erreur generation pack Ollama Phase 2:', error);
+    res.status(500).json({ error: error.message || 'Erreur generation pack Ollama Phase 2' });
   }
 });
 
@@ -248,9 +342,10 @@ router.post('/packs/:packId/challenges/:challengeId/regenerate-hint', async (req
   }
 });
 
-router.post('/hints/generate', (req, res) => {
+router.post('/hints/generate', async (req, res) => {
   const { question, answer, difficulty } = req.body || {};
-  res.json({ hint: generateHint(question, answer, difficulty) });
+  const aiHint = await generateAIHint(question, answer, difficulty);
+  res.json({ hint: aiHint || generateHint(question, answer, difficulty) });
 });
 
-module.exports = { router, generateHint };
+module.exports = { router, generateHint, generateAIHint };

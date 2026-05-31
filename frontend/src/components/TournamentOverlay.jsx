@@ -395,9 +395,9 @@ export default function TournamentOverlay() {
 
           {step === 'phase2' && (
             <>
-              <p className="tt-kicker">Ascension vers Floor 2</p>
+              <p className="tt-kicker">Ascension vers la phase d elimination</p>
               <h1 className="tt-title">PHASE D'ELIMINATION</h1>
-              <p className="tt-subtitle">CSV Challenge Elimination Round</p>
+              <p className="tt-subtitle">Round d elimination</p>
               <p className="tt-subtitle">2 Equipes Survivront</p>
               <div className="tt-countdown" key={count}>{count}</div>
             </>

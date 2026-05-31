@@ -335,6 +335,52 @@ const styles = `
     100% { transform: scale(1); }
   }
 
+  .score-bump-up { animation: scoreUp 0.65s cubic-bezier(.22,1,.36,1); color: #4ade80 !important; }
+
+  @keyframes scoreUp {
+    0% { transform: scale(1); filter: brightness(1); }
+    35% { transform: scale(1.28); filter: brightness(1.35); }
+    100% { transform: scale(1); filter: brightness(1); }
+  }
+
+  .correct-flash {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(circle at center, rgba(34,197,94,0.22), transparent 55%);
+    animation: correctFlash 0.9s ease forwards;
+  }
+
+  .correct-flash-inner {
+    padding: 1rem 1.4rem;
+    border-radius: 18px;
+    border: 1px solid rgba(74,222,128,0.45);
+    background: rgba(6,24,16,0.82);
+    color: #bbf7d0;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    box-shadow: 0 0 40px rgba(34,197,94,0.35);
+    animation: correctPop 0.55s cubic-bezier(.22,1,.36,1);
+  }
+
+  @keyframes correctFlash {
+    0% { opacity: 0; }
+    15% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  @keyframes correctPop {
+    0% { transform: scale(0.85); opacity: 0; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+
+  .timer-paused .timer-val { color: #fbbf24; }
+
   /* ── Circular timer ── */
   .timer-wrap {
     position: relative;
@@ -1150,15 +1196,19 @@ export default function Team() {
   const [hasBuzzed,   setHasBuzzed]   = useState(false);
   const [buzzed,      setBuzzed]      = useState(false);
   const [showParticles, setShowParticles] = useState(false);
+  const [timerPaused, setTimerPaused] = useState(false);
+  const [correctFlash, setCorrectFlash] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
   const [tournament, setTournament] = useState(null);
   const [phase2Answer, setPhase2Answer] = useState('');
+  const [phase2Wager, setPhase2Wager] = useState(10);
   const [phase2Hint, setPhase2Hint] = useState('');
   const [phase2Feedback, setPhase2Feedback] = useState('');
   const [revealedAnswer, setRevealedAnswer] = useState('');
 
   const socketRef  = useRef(null);
   const scoreRef   = useRef(null);
+  const timerRef   = useRef(0);
 
   /* ── Socket ── */
   useEffect(() => {
@@ -1200,6 +1250,8 @@ export default function Team() {
       setQuestion(q);
       setTimer(q.timeLimit);
       setMaxTimer(q.timeLimit);
+      timerRef.current = q.timeLimit;
+      setTimerPaused(false);
       setHasBuzzed(false);
       setBuzzed(false);
       setShowParticles(false);
@@ -1211,12 +1263,53 @@ export default function Team() {
       setBuzzed(false);
     });
 
-    socket.on('game:timer', (t) => setTimer(t));
+    socket.on('game:timer', (payload) => {
+      if (payload && typeof payload === 'object') {
+        if (payload.phase === 'phase2') return;
+        if (Number.isFinite(Number(payload.timeLeft))) {
+          setTimer(Number(payload.timeLeft));
+          timerRef.current = Number(payload.timeLeft);
+        }
+        return;
+      }
+      if (typeof payload === 'number') setTimer(payload);
+    });
+
+    socket.on('game:timer_stop', ({ timeLeft, phase }) => {
+      if (phase === 'phase2') return;
+      const frozen = Number.isFinite(Number(timeLeft)) ? Number(timeLeft) : timerRef.current;
+      setTimer(frozen);
+      timerRef.current = frozen;
+      setTimerPaused(true);
+    });
 
     socket.on('game:score_update', (newScore) => {
       setScore(newScore);
       scoreRef.current?.classList.add('score-bump');
       setTimeout(() => scoreRef.current?.classList.remove('score-bump'), 400);
+    });
+
+    socket.on('score:update', (payload) => {
+      const localTeamId = localStorage.getItem('teamId') || '';
+      if (String(payload?.teamId) !== String(localTeamId)) return;
+      if (Number.isFinite(Number(payload?.score))) {
+        setScore(Number(payload.score));
+      }
+      scoreRef.current?.classList.add('score-bump-up');
+      setTimeout(() => scoreRef.current?.classList.remove('score-bump-up'), 700);
+      if (payload?.correct) {
+        setCorrectFlash(`+${payload.delta || 0} pts`);
+        setTimeout(() => setCorrectFlash(null), 900);
+      }
+    });
+
+    socket.on('game:answer_result', (payload) => {
+      const localTeamId = localStorage.getItem('teamId') || '';
+      if (!payload?.correct) return;
+      if (String(payload.teamId) === String(localTeamId)) {
+        setCorrectFlash(`Correct · +${payload.delta || 0}`);
+        setTimeout(() => setCorrectFlash(null), 900);
+      }
     });
 
     const syncTournamentState = (data) => {
@@ -1237,6 +1330,7 @@ export default function Team() {
     socket.on('phase2:challenge_started', (data) => {
       setTournament(data);
       setPhase2Answer('');
+      setPhase2Wager(10);
       setPhase2Hint('');
       setPhase2Feedback('');
       setRevealedAnswer('');
@@ -1247,14 +1341,33 @@ export default function Team() {
     socket.on('phase2:submission_result', (data) => {
       if (data.correct) {
         setPhase2Feedback(`Correct. +${data.points} points${data.usedHint ? ' avec indice' : ''}.`);
+        setCorrectFlash(`Correct · +${data.points || 0}`);
+        setTimeout(() => setCorrectFlash(null), 900);
       } else if (data.penalty) {
         setPhase2Feedback(`Mauvaise réponse. ${data.penalty} point(s).`);
       } else {
         setPhase2Feedback(data.reason || 'Soumission refusée.');
       }
     });
-    socket.on('phase2:submission_update', setTournament);
+    socket.on('phase2:submission_update', syncTournamentState);
     socket.on('phase2:round_winner', syncTournamentState);
+    socket.on('phase2:scores_updated', syncTournamentState);
+    socket.on('phase2:score_update', ({ score, teamId }) => {
+      const localTeamId = localStorage.getItem('teamId') || '';
+      if (String(teamId) !== String(localTeamId)) return;
+      setTournament((prev) => {
+        if (!prev?.phase2?.scores) return prev;
+        return {
+          ...prev,
+          phase2: {
+            ...prev.phase2,
+            scores: prev.phase2.scores.map((team) => (
+              String(team.id) === String(localTeamId) ? { ...team, score } : team
+            ))
+          }
+        };
+      });
+    });
     socket.on('phase2:hint_usage_update', syncTournamentState);
     socket.on('phase2:hint', ({ hint }) => setPhase2Hint(hint));
     socket.on('phase2:hint_revealed', ({ hint, state }) => {
@@ -1283,23 +1396,36 @@ export default function Team() {
 
   /* ── Local countdown ── */
   useEffect(() => {
-    if (timer <= 0) return;
-    const id = setInterval(() => setTimer(t => Math.max(0, t - 1)), 1000);
-    return () => clearInterval(id);
+    timerRef.current = timer;
   }, [timer]);
 
+  useEffect(() => {
+    if (timer <= 0 || timerPaused || !question) return;
+    const id = setInterval(() => setTimer(t => Math.max(0, t - 1)), 1000);
+    return () => clearInterval(id);
+  }, [timer, timerPaused, question]);
+
   /* ── Buzz ── */
-  // Cherche cette partie dans handleBuzz
 const handleBuzz = useCallback(async () => {
-  if (hasBuzzed || !question || timer === 0) return;
+  if (hasBuzzed || !question || timer === 0 || timerPaused) return;
+  const buzzTime = timerRef.current;
   setHasBuzzed(true);
   setBuzzed(true);
+  setTimerPaused(true);
   setShowParticles(true);
   setTimeout(() => setShowParticles(false), 800);
 
+  const teamId = localStorage.getItem('teamId') || `team-${Date.now()}`;
+
+  socketRef.current?.emit('team:buzz', {
+    teamId,
+    teamName,
+    questionId: question.id,
+    buzzTime
+  });
+
   try {
     const token = localStorage.getItem('token');
-    const teamId = localStorage.getItem('teamId') || `team-${Date.now()}`;
     
     await fetch(`${API_BASE}/api/game/buzz`, {
       method: 'POST',
@@ -1309,16 +1435,17 @@ const handleBuzz = useCallback(async () => {
       },
       body: JSON.stringify({ 
         questionId: question.id, 
-        buzzTime: timer,
-        teamId: teamId
+        buzzTime,
+        teamId
       }),
     });
   } catch (err) {
     console.error('Erreur buzz:', err);
     setHasBuzzed(false);
     setBuzzed(false);
+    setTimerPaused(false);
   }
-}, [hasBuzzed, question, timer]);
+}, [hasBuzzed, question, timer, timerPaused, teamName]);
 
   const localTeamId = localStorage.getItem('teamId') || '';
   const phase2 = tournament?.phase2;
@@ -1327,6 +1454,10 @@ const handleBuzz = useCallback(async () => {
   const phase2Active = tournament?.phase === 'phase2' || phase2?.active;
   const phase3Active = tournament?.phase === 'phase3' || phase3?.active;
   const phase2Challenge = phase2?.currentChallenge;
+  const phase2Modifier = phase2?.modifier;
+  const phase2ModifierLabel = phase2?.modifierLabel;
+  const isRiskRound = phase2Modifier === 'risk_round';
+  const hintsDisabled = phase2Modifier === 'no_hint' || phase2?.hintsDisabled;
   const phase2Me = phase2?.scores?.find(team => String(team.id) === String(localTeamId));
   const phase3Me = phase3?.scores?.find(team => String(team.id) === String(localTeamId));
   const phase2Rank = phase2Me?.rank || '-';
@@ -1356,7 +1487,8 @@ const handleBuzz = useCallback(async () => {
     socketRef.current?.emit('phase2:submit_answer', {
       teamId: localTeamId,
       teamName,
-      answer: phase2Answer
+      answer: phase2Answer,
+      wager: phase2?.modifier === 'risk_round' ? Number(phase2Wager) : undefined
     });
   };
 
@@ -1382,7 +1514,7 @@ const handleBuzz = useCallback(async () => {
   const phase2LockActive = phase2Active && Boolean(phase2Challenge) && eliminatedPhase2;
   const phase3LockActive = phase3Active && eliminatedPhase3;
   const buzzFrozen = Boolean(phase2LockActive || phase3LockActive);
-  const btnDisabled = hasBuzzed || !question || timer === 0 || buzzFrozen;
+  const btnDisabled = hasBuzzed || !question || timer === 0 || timerPaused || buzzFrozen;
   const buzzHintText = buzzFrozen
     ? 'Accès verrouillé: équipe spectatrice'
     : hasBuzzed
@@ -1400,6 +1532,12 @@ const handleBuzz = useCallback(async () => {
       <div className="orb orb-2" />
       <div className="orb orb-3" />
 
+      {correctFlash && (
+        <div className="correct-flash">
+          <div className="correct-flash-inner">{correctFlash}</div>
+        </div>
+      )}
+
       <div className={`tr ${!phase2Active && !phase3Active ? 'phase1-only' : ''}`}>
         <div className="tr-inner">
 
@@ -1413,7 +1551,7 @@ const handleBuzz = useCallback(async () => {
               </div>
               <div>
                 <p className="brand-name">Deck d'Ascension</p>
-                <p className="brand-sub">Votre course dans Tournament Tower</p>
+                <p className="brand-sub">Votre course dans ISGA Summit Challenge</p>
               </div>
             </div>
             <div className={`conn-pill ${isConnected ? 'online' : ''}`}>
@@ -1499,6 +1637,9 @@ const handleBuzz = useCallback(async () => {
                         <span className="qtag qtag-cat">{phase2Challenge.category}</span>
                         <span className="qtag qtag-pts">{phase2Challenge.points} pts</span>
                         <span className="qtag qtag-hard">{phase2Challenge.penalty} pénalité</span>
+                        {phase2ModifierLabel && (
+                          <span className="qtag qtag-hard">{phase2ModifierLabel}</span>
+                        )}
                       </div>
                       <h2>{phase2Challenge.question}</h2>
                       <p className="team-p2-sub">Temps restant: {phase2?.timer ?? 0}s</p>
@@ -1506,18 +1647,34 @@ const handleBuzz = useCallback(async () => {
                       {eliminatedPhase2 ? (
                         <div className="team-feedback bad">Vous êtes spectateur pour cette phase.</div>
                       ) : (
-                        <form className="team-answer-row" onSubmit={submitPhase2Answer}>
-                          <input
-                            className="team-answer-input"
-                            value={phase2Answer}
-                            onChange={e => setPhase2Answer(e.target.value)}
-                            placeholder="Votre réponse..."
-                            disabled={!canPlayPhase2 || Boolean(phase2?.roundWinner)}
-                          />
-                          <button className="team-lock-btn" disabled={!canPlayPhase2 || Boolean(phase2?.roundWinner)}>
-                            LOCK IN
-                          </button>
-                        </form>
+                        <>
+                          {isRiskRound && (
+                            <div className="team-feedback" style={{ marginBottom: '0.65rem' }}>
+                              Mise (Risk Round):{' '}
+                              <input
+                                type="range"
+                                min="5"
+                                max="20"
+                                value={phase2Wager}
+                                onChange={(e) => setPhase2Wager(Number(e.target.value))}
+                                disabled={!canPlayPhase2 || Boolean(phase2?.roundWinner)}
+                              />
+                              <strong style={{ marginLeft: '0.5rem' }}>{phase2Wager} pts</strong>
+                            </div>
+                          )}
+                          <form className="team-answer-row" onSubmit={submitPhase2Answer}>
+                            <input
+                              className="team-answer-input"
+                              value={phase2Answer}
+                              onChange={e => setPhase2Answer(e.target.value)}
+                              placeholder="Votre réponse..."
+                              disabled={!canPlayPhase2 || Boolean(phase2?.roundWinner)}
+                            />
+                            <button className="team-lock-btn" disabled={!canPlayPhase2 || Boolean(phase2?.roundWinner)}>
+                              LOCK IN
+                            </button>
+                          </form>
+                        </>
                       )}
 
                       {phase2Feedback && (
@@ -1552,8 +1709,12 @@ const handleBuzz = useCallback(async () => {
                   </div>
                   <div className="team-p2-stat">
                     <p className="team-p2-sub">Indice</p>
-                    <button className="team-hint-btn" onClick={requestPhase2Hint} disabled={!canPlayPhase2 || !phase2Challenge || Boolean(phase2Hint)}>
-                      Utiliser indice (-2 reward)
+                    <button
+                      className="team-hint-btn"
+                      onClick={requestPhase2Hint}
+                      disabled={!canPlayPhase2 || !phase2Challenge || Boolean(phase2Hint) || hintsDisabled}
+                    >
+                      {hintsDisabled ? 'Indice désactivé (No Hint)' : 'Utiliser indice (-2 reward)'}
                     </button>
                     {phase2Hint && <div className="team-feedback">{phase2Hint}</div>}
                   </div>

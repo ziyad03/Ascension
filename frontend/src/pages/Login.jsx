@@ -417,8 +417,8 @@ export default function Login() {
           <section className="quiz-frame">
             <div className="quiz-logo">QUIZ</div>
             <div className="quiz-copy">
-              <h1>Crazy Challenge Tournament Tower</h1>
-              <p>Creer une equipe, ajouter ses joueurs, puis entrer en Phase de Qualification avec avatar, tag et couleur partages.</p>
+              <h1>ISGA Summit Challenge</h1>
+              <p>Creer une equipe, ajouter ses joueurs, puis entrer en phase de qualification avec avatar, tag et couleur partages.</p>
             </div>
           </section>
 

@@ -4,12 +4,13 @@ const fs = require('fs');
 const path = require('path');
 
 const OLLAMA_ENDPOINT = process.env.OLLAMA_ENDPOINT || 'http://localhost:11434';
-const ROUND_SIZE = 5;
+const ROUND_SIZE = 10;
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 120000);
 const CACHE_TIMEOUT_MS = Number(process.env.QUESTION_CACHE_TIMEOUT_MS || 150);
-const OLLAMA_PREFLIGHT_TIMEOUT_MS = Number(process.env.OLLAMA_PREFLIGHT_TIMEOUT_MS || 250);
+const OLLAMA_PREFLIGHT_TIMEOUT_MS = Number(process.env.OLLAMA_PREFLIGHT_TIMEOUT_MS || 5000);
+const CATEGORY_BANK_BATCH_SIZE = Number(process.env.OLLAMA_BANK_BATCH_SIZE || ROUND_SIZE);
 const LOCAL_CACHE_PATH = path.join(__dirname, '..', '..', '.local-data', 'phase1-question-cache.json');
-const LOCAL_CACHE_VERSION = 'medium-v2';
+const LOCAL_CACHE_VERSION = 'bank-v1';
 
 process.env.OLLAMA_MODELS = process.env.OLLAMA_MODELS || 'D:\\Ollama\\models';
 
@@ -25,10 +26,13 @@ const CATEGORIES = new Set([
   'Technology',
   'Programming',
   'Web Development',
+  'Mobile Development',
   'Databases',
   'Networking',
   'Cybersecurity',
   'Artificial Intelligence',
+  'Machine Learning',
+  'Cloud Computing',
   'Science',
   'Mathematics',
   'Logic',
@@ -36,22 +40,59 @@ const CATEGORIES = new Set([
   'Geography',
   'Economics',
   'Business',
+  'Entrepreneurship',
   'Startups',
   'Engineering',
+  'Electronics',
   'Culture',
   'Cinema',
+  'Literature',
   'Sports',
+  'Mobile Development',
+  'Machine Learning',
+  'Cloud Computing',
+  'Electronics',
   'General Knowledge',
   'Mixed Challenges'
 ]);
 
 const FALLBACK_QUESTIONS = [
-  { question: 'Quel protocole chiffre le plus souvent une connexion web HTTPS ?', type: 'Buzzer', choices: [], answer: 'TLS', category: 'Technology', difficulty: 'Medium', timeLimit: 20, points: 10 },
-  { question: 'Quelle notation decrit une complexite lineaire ?', type: 'Buzzer', choices: [], answer: 'O(n)', category: 'Programming', difficulty: 'Medium', timeLimit: 20, points: 10 },
-  { question: 'Quel pays abrite le site historique du Machu Picchu ?', type: 'Buzzer', choices: [], answer: 'Perou', category: 'General Knowledge', difficulty: 'Medium', timeLimit: 20, points: 10 },
-  { question: 'Combien vaut 15 pour cent de 240 ?', type: 'Buzzer', choices: [], answer: '36', category: 'Mathematics', difficulty: 'Hard', timeLimit: 20, points: 10 },
-  { question: 'Quel organite produit le plus d energie dans la cellule ?', type: 'Buzzer', choices: [], answer: 'Mitochondrie', category: 'Science', difficulty: 'Hard', timeLimit: 20, points: 10 }
+  { question: 'Quel protocole protege une session HTTPS moderne contre l ecoute passive ?', answer: 'TLS', category: 'Technology', difficulty: 'Medium' },
+  { question: 'Quelle notation decrit un algorithme dont le temps grandit lineairement avec n ?', answer: 'O(n)', category: 'Programming', difficulty: 'Medium' },
+  { question: 'Quelle propriete ACID garantit tout ou rien dans une transaction ?', answer: 'Atomicite', category: 'Databases', difficulty: 'Medium' },
+  { question: 'Quel protocole traduit un nom de domaine en adresse IP ?', answer: 'DNS', category: 'Networking', difficulty: 'Medium' },
+  { question: 'Quel indicateur mesure la hausse generale des prix ?', answer: 'Inflation', category: 'Economics', difficulty: 'Medium' },
+  { question: 'Quel phenomene IA produit une reponse plausible mais fausse ?', answer: 'Hallucination', category: 'Artificial Intelligence', difficulty: 'Medium' },
+  { question: 'Quel modele securite ne fait jamais confiance automatiquement au reseau interne ?', answer: 'Zero trust', category: 'Cybersecurity', difficulty: 'Hard' },
+  { question: 'Quel pattern protege un service instable en coupant temporairement les appels ?', answer: 'Circuit breaker', category: 'Technology', difficulty: 'Hard' },
+  { question: 'Quel protocole annonce des routes entre grands reseaux Internet ?', answer: 'BGP', category: 'Networking', difficulty: 'Hard' },
+  { question: 'Quel indicateur SRE mesure le temps moyen de retablissement ?', answer: 'MTTR', category: 'Technology', difficulty: 'Hard' }
 ];
+
+function buildChoices(answer, choices = [], index = 0) {
+  const cleanAnswer = String(answer || '').trim();
+  const fallbackPool = FALLBACK_QUESTIONS.map(question => question.answer);
+  const pool = [...choices, ...fallbackPool]
+    .map(choice => String(choice || '').trim())
+    .filter(choice => choice && choice.toLowerCase() !== cleanAnswer.toLowerCase());
+  const selected = [];
+  const seen = new Set([cleanAnswer.toLowerCase()]);
+
+  for (let offset = 0; offset < pool.length && selected.length < 3; offset += 1) {
+    const choice = pool[(index + offset) % pool.length];
+    const key = choice.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    selected.push(choice);
+  }
+
+  while (selected.length < 3) {
+    selected.push(`Option ${selected.length + 1}`);
+  }
+
+  selected.splice(index % 4, 0, cleanAnswer);
+  return selected.slice(0, 4);
+}
 
 function extractJsonArray(text) {
   const raw = String(text || '').trim();
@@ -81,8 +122,8 @@ function extractLooseQuestions(text, category = 'Mixed') {
     return question && answer
       ? {
           question,
-          type: 'Buzzer',
-          choices: [],
+          type: 'MCQ',
+          choices: buildChoices(answer, [], 0),
           answer,
           category,
           difficulty: difficulty === 'Hard' ? 'Hard' : 'Medium',
@@ -94,10 +135,11 @@ function extractLooseQuestions(text, category = 'Mixed') {
 }
 
 function normalizeQuestion(item, index) {
-  const type = 'Buzzer';
+  const type = 'MCQ';
   const answer = String(item.answer || item.correctAnswer || '').trim();
   const question = String(item.question || item.text || '').trim();
   const category = CATEGORIES.has(item.category) ? item.category : 'Mixed Challenges';
+  const choices = buildChoices(answer, item.choices || item.options || [], index);
 
   if (!question || !answer) {
     throw new Error(`Question ${index + 1} is missing text or answer`);
@@ -106,7 +148,7 @@ function normalizeQuestion(item, index) {
   return {
     question,
     type,
-    choices: [],
+    choices,
     answer,
     category,
     difficulty: item.difficulty === 'Hard' ? 'Hard' : 'Medium',
@@ -132,9 +174,9 @@ function validateQuestions(payload) {
   });
 
   const hardCount = questions.filter(question => question.difficulty === 'Hard').length;
-  if (hardCount !== 2) {
+  if (hardCount !== 4) {
     questions.forEach((question, index) => {
-      question.difficulty = index >= 3 ? 'Hard' : 'Medium';
+      question.difficulty = index >= 6 ? 'Hard' : 'Medium';
     });
   }
 
@@ -143,24 +185,25 @@ function validateQuestions(payload) {
 
 function buildPrompt(roundNumber, category = 'Mixed Challenges') {
   return [
-    'Tu es un generateur JSON strict pour un quiz buzzer.',
+    'Tu es un generateur JSON strict pour un quiz MCQ.',
     'Retourne uniquement un tableau JSON valide. Aucun markdown. Aucun texte avant ou apres.',
-    `Cree exactement ${ROUND_SIZE} questions de competition en francais pour Crazy Challenge Floor 1 - Phase de Qualification, round ${roundNumber}.`,
+    `Cree exactement ${ROUND_SIZE} questions de competition en francais pour ISGA Summit Challenge, phase de qualification, round ${roundNumber}.`,
     'Ambiance: OPEN GROUND, accueillante, rapide, ludique.',
     `Categorie exacte a utiliser dans chaque objet: ${category}.`,
     'Contraintes obligatoires:',
-    '- type doit etre exactement "Buzzer"',
-    '- choices doit etre exactement []',
+    '- type doit etre exactement "MCQ"',
+    '- choices doit contenir exactement 4 propositions courtes',
+    '- choices doit contenir la bonne reponse',
     '- question et answer doivent etre en francais',
     '- answer doit etre courte: 1 a 4 mots',
-    '- difficulty doit etre "Medium" pour 3 questions et "Hard" pour 2 questions',
+    '- difficulty doit etre "Medium" pour 6 questions et "Hard" pour 4 questions',
     '- aucune question triviale: pas de capitale evidente, pas de calcul simple, pas de definition trop basique',
     '- chaque question doit demander raisonnement, connaissance appliquee ou discussion d equipe',
     '- timeLimit doit etre 20',
     '- points doit etre 10',
-    '- pas de QCM, pas de choix, pas de sujets controverses',
+    '- pas de sujets controverses',
     'Schema exact:',
-    '[{"question":"Question de niveau moyen ?","type":"Buzzer","choices":[],"answer":"Reponse","category":"' + category + '","difficulty":"Medium","timeLimit":20,"points":10}]'
+    '[{"question":"Question de niveau moyen ?","type":"MCQ","choices":["Reponse","Option A","Option B","Option C"],"answer":"Reponse","category":"' + category + '","difficulty":"Medium","timeLimit":20,"points":10}]'
   ].join('\n');
 }
 
@@ -179,6 +222,63 @@ function checkOllamaReady() {
     req.on('error', reject);
     req.end();
   });
+}
+
+async function fetchOllamaTags() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OLLAMA_PREFLIGHT_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${OLLAMA_ENDPOINT}/api/tags`, { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`Ollama tags ${response.status}`);
+    }
+    const payload = await response.json();
+    return (payload.models || []).map((entry) => entry.name || entry.model).filter(Boolean);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function getOllamaStatus() {
+  const model = OLLAMA_CONFIG.model;
+  try {
+    const ready = await checkOllamaReady();
+    if (!ready) {
+      return {
+        ready: false,
+        endpoint: OLLAMA_ENDPOINT,
+        model,
+        modelAvailable: false,
+        models: [],
+        error: 'Ollama endpoint unreachable'
+      };
+    }
+
+    const models = await fetchOllamaTags();
+    const modelAvailable = models.some((name) => {
+      const normalized = String(name).toLowerCase();
+      return normalized === model.toLowerCase() || normalized.startsWith('phi3');
+    });
+
+    return {
+      ready: true,
+      endpoint: OLLAMA_ENDPOINT,
+      model,
+      modelAvailable,
+      models,
+      error: modelAvailable ? null : `Model ${model} not found. Run: ollama pull phi3`
+    };
+  } catch (error) {
+    return {
+      ready: false,
+      endpoint: OLLAMA_ENDPOINT,
+      model,
+      modelAvailable: false,
+      models: [],
+      error: error.message
+    };
+  }
 }
 
 function toAppQuestion(question, index, roundNumber, sourceId = null) {
@@ -231,7 +331,8 @@ function getCachedLocalRound(roundNumber, category) {
   const cache = readLocalCache();
   const cached = cache[localCacheKey(roundNumber, category)];
   if (!Array.isArray(cached) || cached.length !== ROUND_SIZE) return null;
-  if (cached.some(question => question.difficulty !== 'Medium')) return null;
+  if (cached.some(question => !['Medium', 'Hard'].includes(question.difficulty))) return null;
+  if (cached.filter(question => question.difficulty === 'Hard').length !== 4) return null;
   return cached.map((question, index) => toAppQuestion(question, index, roundNumber));
 }
 
@@ -264,7 +365,8 @@ async function getCachedRound(prisma, roundNumber, category = 'Mixed Challenges'
 
   if (
     rows.length !== ROUND_SIZE
-    || rows.some(row => row.category !== category || row.payload?.difficulty !== 'Medium')
+    || rows.some(row => row.category !== category || !['Medium', 'Hard'].includes(row.payload?.difficulty))
+    || rows.filter(row => row.payload?.difficulty === 'Hard').length !== 4
   ) return null;
 
   return rows.map(row => toAppQuestion(row.payload, row.questionIndex, roundNumber, row.id));
@@ -330,6 +432,65 @@ async function callOllama(roundNumber, category) {
   return validateQuestions(parsed);
 }
 
+async function generateCategoryBankBatch({ prisma, category = 'Mixed Challenges', targetCount = 50 } = {}) {
+  const normalizedCategory = CATEGORIES.has(category) ? category : 'Mixed Challenges';
+  const targetBankSize = Math.max(20, Number(targetCount) || 50);
+  const bank = [];
+  const seen = new Set();
+  let roundNumber = 1;
+  let source = 'ollama_phi3';
+  let ollamaCalls = 0;
+
+  while (bank.length < targetBankSize && ollamaCalls < 12) {
+    ollamaCalls += 1;
+    try {
+      const generated = await callOllama(roundNumber, normalizedCategory);
+      for (const question of generated) {
+        const key = question.question.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        bank.push(question);
+      }
+      roundNumber += 1;
+    } catch (error) {
+      console.warn(`Ollama category bank batch ${ollamaCalls} failed:`, error.message);
+      if (bank.length === 0) {
+        source = 'fallback_ollama_unavailable';
+        const fallback = FALLBACK_QUESTIONS.map((question, index) => normalizeQuestion({
+          ...question,
+          category: normalizedCategory
+        }, index));
+        for (const question of fallback) {
+          const key = question.question.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          bank.push(question);
+        }
+      }
+      break;
+    }
+  }
+
+  const questions = bank.slice(0, targetBankSize).map((question, index) => toAppQuestion(question, index, 1));
+  if (questions.length > 0) {
+    await withTimeout(
+      saveRound(prisma, 99, normalizedCategory, bank.slice(0, targetBankSize), source),
+      CACHE_TIMEOUT_MS,
+      'category bank cache write'
+    ).catch((error) => {
+      console.warn('Category bank cache write unavailable:', error.message);
+    });
+  }
+
+  return {
+    questions,
+    source,
+    category: normalizedCategory,
+    count: questions.length,
+    ollamaCalls
+  };
+}
+
 async function generateRoundQuestions({ prisma, roundNumber = 1, category = 'Mixed Challenges', force = false } = {}) {
   if (!force) {
     try {
@@ -364,7 +525,16 @@ async function generateRoundQuestions({ prisma, roundNumber = 1, category = 'Mix
     }
   }
 
-  const fallback = FALLBACK_QUESTIONS.map(question => ({ ...question, category }));
+  const fallback = FALLBACK_QUESTIONS.map((question, index) => ({
+    question: question.question,
+    type: 'MCQ',
+    choices: buildChoices(question.answer, [], index),
+    answer: question.answer,
+    category: CATEGORIES.has(category) ? category : question.category,
+    difficulty: index >= 6 ? 'Hard' : 'Medium',
+    timeLimit: 20,
+    points: 10
+  }));
   await withTimeout(saveRound(prisma, roundNumber, category, fallback, 'fallback_ollama_unavailable'), CACHE_TIMEOUT_MS, 'question cache write').catch(() => {});
   return {
     questions: fallback.map((question, index) => toAppQuestion(question, index, roundNumber)),
@@ -375,6 +545,10 @@ async function generateRoundQuestions({ prisma, roundNumber = 1, category = 'Mix
 
 module.exports = {
   OLLAMA_CONFIG,
+  OLLAMA_ENDPOINT,
+  checkOllamaReady,
+  getOllamaStatus,
   generateRoundQuestions,
+  generateCategoryBankBatch,
   validateQuestions
 };

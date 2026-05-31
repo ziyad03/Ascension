@@ -2,23 +2,23 @@ export const FLOOR_META = {
   phase1: {
     key: 'phase1',
     floor: 1,
-    short: 'Floor 1',
+    short: 'Qualification',
     title: 'Phase de Qualification',
     theme: 'Open Ground',
-    subtitle: 'Toutes les équipes entrent dans la tour.'
+    subtitle: 'Toutes les équipes entrent dans la phase de qualification.'
   },
   phase1_complete: {
     key: 'phase1_complete',
-    floor: 1,
-    short: 'Floor 1',
+    floor: 2,
+    short: 'Transition',
     title: 'Qualification Terminée',
     theme: 'Ascension',
-    subtitle: 'Le Top 4 se prépare à monter.'
+    subtitle: 'Le Top 4 se prépare pour la suite.'
   },
   phase2: {
     key: 'phase2',
     floor: 2,
-    short: 'Floor 2',
+    short: 'Elimination',
     title: "Phase d'Elimination",
     theme: 'Pressure Floor',
     subtitle: 'Top 4. Pression, pénalités et survie.'
@@ -26,17 +26,17 @@ export const FLOOR_META = {
   phase2_complete: {
     key: 'phase2_complete',
     floor: 2,
-    short: 'Floor 2',
+    short: 'Transition',
     title: "Elimination Terminée",
-    theme: 'Accès au Sommet',
+    theme: 'Accès à la finale',
     subtitle: 'Deux équipes montent encore.'
   },
   phase3: {
     key: 'phase3',
     floor: 3,
-    short: 'Floor 3',
+    short: 'Finale',
     title: 'La Grande Finale',
-    theme: 'Summit',
+    theme: 'Top Match',
     subtitle: 'Duel final au sommet.'
   }
 };

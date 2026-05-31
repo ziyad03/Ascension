@@ -7,9 +7,28 @@ const jwt = require('jsonwebtoken');
 const { PrismaClient } = require('@prisma/client');
 require('dotenv').config();
 const csvRoutes = require('./routes/csv');
-const { router: phase2CsvRoutes, generateHint } = require('./routes/phase2Csv');
-const { generateRoundQuestions } = require('./services/ai/questionGenerator');
+const { router: phase2CsvRoutes, generateHint, generateAIHint } = require('./routes/phase2Csv');
+const {
+  calculatePhase2Earned,
+  calculatePhase2Penalty,
+  getModifierLabel,
+  resolvePhase2Modifier,
+  applySuddenQuestionTimer,
+  isAnswerCorrect
+} = require('./services/phase2Scoring');
+const {
+  PHASE1_CATEGORIES: PHASE1_BANK_CATEGORIES,
+  buildCategoryBank,
+  buildPhase1RoundQuestions,
+  buildCategorySelection,
+  buildFreshCategorySelection,
+  generateCategoryBank,
+  normalizeCategory: normalizeBankCategory,
+  normalizeBankKey
+} = require('./services/phase1QuestionBank');
+const { getOllamaStatus } = require('./services/ai/questionGenerator');
 const localStore = require('./services/localStore');
+const phase2LocalStore = require('./services/phase2LocalStore');
 
 const prisma = new PrismaClient();
 const DEVELOPMENT_MODE = process.env.NODE_ENV !== 'production'
@@ -51,7 +70,7 @@ app.use(express.json());
 
 app.get('/', (req, res) => {
   res.json({
-    name: 'Crazy Challenge Platform API',
+    name: 'ISGA Summit Challenge API',
     status: 'ok',
     health: '/api/health',
     questions: '/api/questions',
@@ -64,25 +83,12 @@ app.post('/api/game/buzz', async (req, res) => {
   try {
     const { questionId, buzzTime, teamId } = req.body;
     console.log('BUZZ HTTP reçu:', { questionId, buzzTime, teamId });
-    const activeTeam = activeTeams[String(teamId)];
-    
-    io.to('moderator-session').emit('game:answer_received', {
+    registerPhase1Buzz({
+      teamId,
       questionId,
-      teamId: activeTeam?.name || teamId || 'Équipe',
       buzzTime,
-      answer: 'En attente de réponse...',
-      points: 0,
-      timestamp: new Date()
+      source: 'http'
     });
-  io.to('public-room').emit('buzz:first', {
-    teamName: activeTeam?.name || teamId || 'Équipe',
-    teamId: String(teamId || ''),
-    avatar: activeTeam?.avatar || '',
-    color: activeTeam?.color || '#17e9ff',
-    tag: activeTeam?.tag || '',
-    time: Date.now()
-  });
-    
     res.json({ success: true, message: 'Buzz enregistré' });
   } catch (error) {
     console.error('Erreur buzz:', error);
@@ -101,6 +107,7 @@ app.get('/api/health', async (req, res) => {
     api: 'ok',
     database: 'unknown',
     fallbackStore: 'available',
+    ollama: null,
     time: new Date().toISOString()
   };
 
@@ -112,7 +119,53 @@ app.get('/api/health', async (req, res) => {
     health.databaseError = error.message;
   }
 
+  try {
+    health.ollama = await getOllamaStatus();
+  } catch (error) {
+    health.ollama = { ready: false, error: error.message };
+  }
+
   res.json(health);
+});
+
+app.get('/api/ai/ollama/status', async (req, res) => {
+  try {
+    const status = await getOllamaStatus();
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ ready: false, error: error.message || 'Ollama status unavailable' });
+  }
+});
+
+app.post('/api/tournament/phase1/category-bank/generate', async (req, res) => {
+  try {
+    const category = normalizePhase1Category(req.body?.category || 'Mixed Challenges');
+    const targetCount = Number.parseInt(req.body?.targetCount, 10) || 50;
+    const force = req.body?.force !== false;
+    const ollamaStatus = await getOllamaStatus();
+
+    const questions = await generateCategoryBank(prisma, category, targetCount, force);
+    const source = questions.length >= targetCount && ollamaStatus.modelAvailable
+      ? 'ollama_phi3'
+      : 'local_competition_bank';
+
+    res.json({
+      category,
+      count: questions.length,
+      source,
+      ollama: ollamaStatus,
+      questions: questions.map((question) => ({
+        question: question.question || question.text,
+        choices: question.choices || question.options || [],
+        category: question.category,
+        difficulty: question.difficulty,
+        timeLimit: question.timeLimit
+      }))
+    });
+  } catch (error) {
+    console.error('Category bank generation error:', error);
+    res.status(500).json({ error: error.message || 'Category bank generation failed' });
+  }
 });
 
 app.use('/api/csv', csvRoutes);
@@ -409,52 +462,38 @@ app.post('/api/tournament/dev/force-elimination', async (req, res) => {
 
 app.post('/api/tournament/phase2/start', async (req, res) => {
   try {
-    if (tournamentState.phase1.qualified.length === 0) {
-      await completePhase1();
-    }
-
-    tournamentState.phase = 'phase2';
-    tournamentState.phase2.active = true;
-    tournamentState.phase2.paused = false;
-    tournamentState.phase2.roundNumber = 0;
-    tournamentState.phase2.currentPackId = null;
-    tournamentState.phase2.currentPackName = null;
-    tournamentState.phase2.currentChallenge = null;
-    tournamentState.phase2.submissions = [];
-    tournamentState.phase2.hintUsage = {};
-    tournamentState.phase2.hintUsageLog = [];
-    tournamentState.phase2.penaltyEvents = [];
-    tournamentState.phase2.activityFeed = [];
-    tournamentState.phase2.roundWinner = null;
-    tournamentState.phase2.hintRevealed = false;
-    tournamentState.phase2.answerRevealed = false;
-    tournamentState.phase2.roundStatus = 'ready';
-    tournamentState.phase2.roundHistorySaved = false;
-    tournamentState.phase2.scores = {};
-    tournamentState.phase2.qualifiedTeams = tournamentState.phase1.qualified;
-    tournamentState.phase2.eliminatedTeams = tournamentState.phase1.eliminated;
-
-    tournamentState.phase2.qualifiedTeams.forEach(team => {
-      tournamentState.phase2.scores[String(team.id)] = {
-        id: String(team.id),
-        name: team.name,
-        tag: team.tag || '',
-        color: team.color || '#17e9ff',
-        avatar: team.avatar || '',
-        score: activeTeams[teamId]?.score || 0,
-        phase1Score: team.score,
-        status: 'active'
-      };
-    });
-
-    logPhase2Activity('phase2', 'Phase 2 démarrée par le modérateur');
-    resetPhase3State();
-    await persistTournamentDevelopmentState();
-    broadcastTournamentState('tournament:phase2_started');
-    res.json(getTournamentSnapshot());
+    const snapshot = await startPhase2FromPhase1('manual_api');
+    res.json(snapshot);
   } catch (error) {
     console.error('Erreur lancement Phase 2:', error);
     res.status(500).json({ error: 'Erreur lancement Phase 2' });
+  }
+});
+
+app.post('/api/tournament/dev/phase2/start-challenge', async (req, res) => {
+  if (!DEVELOPMENT_MODE) {
+    return res.status(403).json({ error: 'Mode développement requis' });
+  }
+
+  try {
+    if (tournamentState.phase !== 'phase2' && tournamentState.phase !== 'phase1_complete') {
+      await skipToPhase2ForTesting();
+      await startPhase2FromPhase1('dev_round_test');
+    }
+
+    const challengeId = req.body?.challengeId;
+    const modifier = req.body?.modifier || 'standard';
+    const loadedChallenge = req.body?.challenge || await loadChallenge(challengeId);
+
+    if (!loadedChallenge) {
+      return res.status(404).json({ error: 'Challenge introuvable' });
+    }
+
+    const snapshot = await launchPhase2Round(loadedChallenge, modifier);
+    res.json(snapshot);
+  } catch (error) {
+    console.error('Erreur dev start challenge Phase 2:', error);
+    res.status(500).json({ error: error.message || 'Erreur lancement round Phase 2' });
   }
 });
 
@@ -539,6 +578,58 @@ function pushBounded(list, entry, max = 18) {
   if (list.length > max) list.length = max;
 }
 
+function emitPhase2Scoreboard() {
+  const sortedTeams = Object.values(tournamentState.phase2.scores)
+    .sort((a, b) => (b.score || 0) - (a.score || 0));
+
+  io.emit('score:refresh', { teams: sortedTeams, phase: 'phase2' });
+}
+
+function emitPhase2ScoreUpdate(teamId, submission) {
+  const id = String(teamId || '');
+  const teamScore = tournamentState.phase2.scores[id];
+  const snapshot = getTournamentSnapshot();
+  const delta = submission.points || submission.penalty || 0;
+
+  if (teamScore && activeTeams[id]?.socketId) {
+    io.to(activeTeams[id].socketId).emit('phase2:score_update', {
+      teamId: id,
+      score: teamScore.score,
+      delta,
+      submission
+    });
+    io.to(activeTeams[id].socketId).emit('game:score_update', teamScore.score);
+  }
+
+  emitScoreUpdate({
+    teamId: id,
+    teamName: teamScore?.name || submission.teamName,
+    score: teamScore?.score || 0,
+    delta,
+    correct: Boolean(submission.correct),
+    accepted: Boolean(submission.correct),
+    phase: 'phase2',
+    animation: submission.correct ? 'correct' : 'wrong',
+    modifier: submission.modifier || null
+  });
+
+  io.emit('phase2:scores_updated', snapshot);
+  emitPhase2Scoreboard();
+  broadcastTournamentState(submission.correct ? 'phase2:round_winner' : 'phase2:submission_update');
+
+  if (submission.correct) {
+    io.emit('game:answer_result', {
+      teamId: id,
+      teamName: teamScore?.name || submission.teamName,
+      score: teamScore?.score || 0,
+      delta: submission.points || 0,
+      correct: true,
+      phase: 'phase2',
+      animation: 'correct'
+    });
+  }
+}
+
 function logPhase2Activity(type, message, extra = {}) {
   pushBounded(tournamentState.phase2.activityFeed, {
     id: feedId(),
@@ -551,14 +642,18 @@ function logPhase2Activity(type, message, extra = {}) {
 
 const publicChallenge = (challenge) => {
   if (!challenge) return null;
+  const hideMeta = tournamentState.phase2.modifierLabel === 'Mystery Challenge';
   return {
     id: challenge.id,
     question: challenge.question,
-    category: challenge.category,
-    difficulty: challenge.difficulty,
+    category: hideMeta ? 'Mystery Challenge' : challenge.category,
+    difficulty: hideMeta ? 'Mystery' : challenge.difficulty,
     points: challenge.points,
     penalty: challenge.penalty,
-    timeLimit: challenge.timeLimit
+    timeLimit: challenge.timeLimit,
+    modifier: tournamentState.phase2.modifier || null,
+    modifierLabel: tournamentState.phase2.modifierLabel || null,
+    hintsDisabled: tournamentState.phase2.modifier === 'no_hint'
   };
 };
 
@@ -581,37 +676,17 @@ const PHASE1_TEST_SPEEDS = {
 };
 
 const PHASE1_ROUND_COUNT = 6;
-const PHASE1_QUESTIONS_PER_ROUND = 5;
-const PHASE1_CATEGORIES = [
-  'Technology',
-  'Programming',
-  'Web Development',
-  'Databases',
-  'Networking',
-  'Cybersecurity',
-  'Artificial Intelligence',
-  'Science',
-  'Mathematics',
-  'Logic',
-  'History',
-  'Geography',
-  'Economics',
-  'Business',
-  'Startups',
-  'Engineering',
-  'Culture',
-  'Cinema',
-  'Sports',
-  'General Knowledge',
-  'Mixed Challenges'
-];
+const PHASE1_QUESTIONS_PER_ROUND = 10;
+const PHASE1_CATEGORIES = PHASE1_BANK_CATEGORIES;
+const PHASE1_TO_PHASE2_DELAY_MS = 5200;
+let phaseTransitionTimer = null;
 
 const FALLBACK_PHASE1_QUESTIONS = [
   { text: "Quel protocole chiffre le plus souvent une connexion web HTTPS ?", correctAnswer: 'TLS', category: 'Technology', type: 'short_answer', difficulty: 'Medium' },
   { text: 'Quelle notation decrit une complexite lineaire ?', correctAnswer: 'O(n)', category: 'Programming', type: 'short_answer', difficulty: 'Medium' },
   { text: 'Quel pays abrite le site historique du Machu Picchu ?', correctAnswer: 'Perou', category: 'General Knowledge', type: 'short_answer', difficulty: 'Medium' },
-  { text: 'Combien vaut 15 pour cent de 240 ?', correctAnswer: '36', category: 'Mathematics', type: 'short_answer', difficulty: 'Medium' },
-  { text: 'Quel organite produit le plus d energie dans la cellule ?', correctAnswer: 'Mitochondrie', category: 'Science', type: 'short_answer', difficulty: 'Medium' }
+  { text: 'Combien vaut 15 pour cent de 240 ?', correctAnswer: '36', category: 'Mathematics', type: 'short_answer', difficulty: 'Hard' },
+  { text: 'Quel organite produit le plus d energie dans la cellule ?', correctAnswer: 'Mitochondrie', category: 'Science', type: 'short_answer', difficulty: 'Hard' }
 ];
 
 const PHASE1_FAST_QUESTION_BANK = {
@@ -643,6 +718,13 @@ const PHASE1_FAST_QUESTION_BANK = {
     ['Quel rendu genere le HTML sur le serveur avant envoi ?', 'SSR'],
     ['Quel attribut HTML ameliore le texte alternatif des images ?', 'alt']
   ],
+  'Mobile Development': [
+    ['Quel framework permet de creer des apps natives avec React ?', 'React Native'],
+    ['Quel fichier Android declare permissions et activites ?', 'AndroidManifest.xml'],
+    ['Quel langage moderne est privilegie pour Android natif ?', 'Kotlin'],
+    ['Quel outil Apple sert a construire une app iOS native ?', 'Xcode'],
+    ['Quel stockage mobile conserve de petites preferences utilisateur ?', 'Keychain']
+  ],
   Databases: [
     ['Quel langage interroge une base relationnelle ?', 'SQL'],
     ['Quelle cle identifie une ligne de maniere unique ?', 'Cle primaire'],
@@ -670,6 +752,20 @@ const PHASE1_FAST_QUESTION_BANK = {
     ['Quel score mesure souvent precision et rappel ensemble ?', 'F1-score'],
     ['Quel reseau est inspire du cerveau ?', 'Reseau neuronal'],
     ['Quel terme designe une instruction envoyee a un LLM ?', 'Prompt']
+  ],
+  'Machine Learning': [
+    ['Quelle separation evalue un modele sur donnees jamais vues ?', 'Test set'],
+    ['Quel parametre controle le pas d apprentissage ?', 'Learning rate'],
+    ['Quelle technique reduit le surapprentissage en coupant des neurones ?', 'Dropout'],
+    ['Quel algorithme regroupe sans etiquettes ?', 'Clustering'],
+    ['Quelle matrice compare predictions et vraies classes ?', 'Matrice de confusion']
+  ],
+  'Cloud Computing': [
+    ['Quel modele cloud fournit des machines virtuelles ?', 'IaaS'],
+    ['Quel service execute du code sans gerer de serveur ?', 'Serverless'],
+    ['Quel principe augmente les instances selon la charge ?', 'Autoscaling'],
+    ['Quel stockage cloud garde des objets dans des buckets ?', 'Object storage'],
+    ['Quel outil decrit l infrastructure par code ?', 'Terraform']
   ],
   Logic: [
     ['Dans la suite 3, 6, 12, 24, quel est le prochain nombre ?', '48'],
@@ -720,6 +816,13 @@ const PHASE1_FAST_QUESTION_BANK = {
     ['Quel terme designe la perte de clients sur une periode ?', 'Churn'],
     ['Quel indicateur suit le cout d acquisition client ?', 'CAC']
   ],
+  Entrepreneurship: [
+    ['Quel test valide une hypothese marche avec peu de ressources ?', 'MVP'],
+    ['Quel entretien sert a comprendre un probleme client ?', 'Customer discovery'],
+    ['Quel document resume proposition de valeur et segments ?', 'Business model canvas'],
+    ['Quel terme designe le premier groupe d utilisateurs convaincus ?', 'Early adopters'],
+    ['Quel indicateur mesure la traction commerciale recurrente ?', 'MRR']
+  ],
   Startups: [
     ['Quel produit minimal teste une idee rapidement ?', 'MVP'],
     ['Quel terme designe l adequation produit marche ?', 'Product-market fit'],
@@ -734,6 +837,13 @@ const PHASE1_FAST_QUESTION_BANK = {
     ['Quel materiau resiste bien a la traction dans le beton arme ?', 'Acier'],
     ['Quel rendement compare energie utile et energie fournie ?', 'Efficacite']
   ],
+  Electronics: [
+    ['Quel composant limite le courant dans un circuit ?', 'Resistance'],
+    ['Quelle unite mesure la capacite electrique ?', 'Farad'],
+    ['Quel composant laisse passer le courant dans un seul sens ?', 'Diode'],
+    ['Quel signal alterne entre niveaux haut et bas periodiques ?', 'PWM'],
+    ['Quel instrument visualise une tension dans le temps ?', 'Oscilloscope']
+  ],
   Culture: [
     ['Quel auteur a ecrit Les Miserables ?', 'Victor Hugo'],
     ['Quel mouvement artistique est associe a Monet ?', 'Impressionnisme'],
@@ -747,6 +857,13 @@ const PHASE1_FAST_QUESTION_BANK = {
     ['Quelle recompense majeure est decernee a Cannes ?', 'Palme d Or'],
     ['Quel genre melange enquete et ambiance sombre ?', 'Film noir'],
     ['Quel metier coordonne le montage final du film ?', 'Monteur']
+  ],
+  Literature: [
+    ['Quel narrateur raconte avec le pronom je ?', 'Interne'],
+    ['Quel procede compare sans utiliser comme ?', 'Metaphore'],
+    ['Quel auteur a ecrit Cent ans de solitude ?', 'Garcia Marquez'],
+    ['Quel mouvement litteraire valorise raison et progres au XVIIIe siecle ?', 'Lumieres'],
+    ['Quel registre cherche a provoquer la peur ?', 'Fantastique']
   ],
   Sports: [
     ['Combien de joueurs une equipe de basket aligne-t-elle sur le terrain ?', '5'],
@@ -808,30 +925,21 @@ function buildPhase1TestQuestions(source = FALLBACK_PHASE1_QUESTIONS) {
     text: question.text || question.question,
     category: question.category || 'Qualification',
     points: Number(question.points || 10),
-    type: 'Buzzer',
-    options: [],
-    choices: [],
+    type: 'MCQ',
+    options: question.options || question.choices || [],
+    choices: question.choices || question.options || [],
     correctAnswer: question.correctAnswer || question.answer || '',
     answer: question.answer || question.correctAnswer || '',
-    difficulty: question.difficulty || (index < 3 ? 'Medium' : 'Hard'),
+    difficulty: question.difficulty || (index < 6 ? 'Medium' : 'Hard'),
     timeLimit: Number(question.timeLimit || 20)
   }));
 }
 
-function buildPhase1SimulationQuestions(roundNumber, category) {
-  const bank = PHASE1_FAST_QUESTION_BANK[category] || PHASE1_FAST_QUESTION_BANK['Mixed Challenges'];
-  const source = bank.map(([text, correctAnswer], index) => ({
-    text,
-    correctAnswer,
-    category,
-    type: 'short_answer',
-    difficulty: index < 3 ? 'Medium' : 'Hard'
-  }));
-
-  return buildPhase1TestQuestions(source).map((question, index) => ({
+function buildPhase1SimulationQuestions(roundNumber, category, shuffle = false) {
+  return buildPhase1RoundQuestions(roundNumber, category, shuffle).map((question, index) => ({
     ...question,
     id: `phase1-sim-r${roundNumber}-q${index + 1}`,
-    category,
+    category: normalizePhase1Category(category),
     roundNumber
   }));
 }
@@ -870,11 +978,69 @@ function extractJsonArray(text) {
 }
 
 async function generateQuestionsWithLocalAI(roundNumber = 1, category = 'Mixed', force = false) {
-  const generated = await generateRoundQuestions({ prisma, roundNumber, category, force });
+  const questions = await buildCategorySelection(prisma, category, PHASE1_QUESTIONS_PER_ROUND, true);
   return {
-    ...generated,
-    questions: buildPhase1TestQuestions(generated.questions)
+    questions: buildPhase1TestQuestions(questions),
+    source: force ? 'category_bank_refill' : 'category_bank',
+    roundNumber
   };
+}
+
+async function regeneratePhase1CategoryBank(category = null, targetCount = 50) {
+  const selectedCategory = normalizePhase1Category(
+    category || tournamentState.phase1.test?.roundCategory || tournamentState.phase1.test?.categoryBankCategory || 'Mixed Challenges'
+  );
+  const ollamaStatus = await getOllamaStatus();
+  const questions = await generateCategoryBank(prisma, selectedCategory, Math.max(50, targetCount), true);
+  const source = ollamaStatus.modelAvailable && ollamaStatus.ready ? 'ollama_phi3' : 'local_competition_bank';
+  const selection = buildPhase1TestQuestions(questions.slice(0, PHASE1_QUESTIONS_PER_ROUND));
+
+  tournamentState.phase = 'phase1';
+  tournamentState.phase1 = {
+    ...tournamentState.phase1,
+    test: {
+      ...(tournamentState.phase1.test || {}),
+      categoryBankCategory: selectedCategory,
+      categoryBankSize: questions.length,
+      categoryBankSource: source,
+      generatedQuestions: selection,
+      generatedQuestionSource: source,
+      roundCategory: selectedCategory,
+      selectedNextCategory: null,
+      nextCategoryChoices: [],
+      pendingCategoryChoice: false,
+      currentQuestionIndex: -1,
+      status: 'bank_ready',
+      lastAction: 'regenerate_category_bank',
+      updatedAt: new Date().toISOString()
+    }
+  };
+
+  tournamentState.development.lastAction = 'regenerate_category_bank';
+  await persistTournamentDevelopmentState();
+
+  return {
+    category: selectedCategory,
+    count: questions.length,
+    questions: selection,
+    source,
+    ollama: ollamaStatus,
+    snapshot: getTournamentSnapshot()
+  };
+}
+
+function shouldUseQuestionsDirectly(source = '') {
+  return source === 'cache'
+    || source === 'category_bank'
+    || source === 'category_bank_fresh'
+    || source === 'local_seed_bank'
+    || source === 'local_french_fast'
+    || String(source).startsWith('fallback_')
+    || String(source).startsWith('ollama');
+}
+
+function collectPhase1QuestionKeys(questions = []) {
+  return questions.map((question) => normalizeBankKey(question)).filter(Boolean);
 }
 
 async function storeGeneratedQuestions(questions) {
@@ -906,12 +1072,8 @@ async function storeGeneratedQuestions(questions) {
 }
 
 function ensurePhase1TestingAllowed() {
-  if (!DEVELOPMENT_MODE) {
-    throw new Error('Mode développement requis');
-  }
-
   if (['phase2', 'phase2_complete', 'phase3'].includes(tournamentState.phase)) {
-    throw new Error('Floor 1 testing is locked after Floor 2 starts');
+    throw new Error('Phase 1 testing is locked after Phase 2 starts');
   }
 }
 
@@ -963,15 +1125,153 @@ function emitPhase1Scoreboard() {
   const sortedTeams = Object.values(activeTeams)
     .sort((a, b) => (b.score || 0) - (a.score || 0));
 
-  io.to('moderator-session').emit('score:refresh', { teams: sortedTeams });
-  io.to('public-room').emit('score:refresh', { teams: sortedTeams });
+  io.emit('score:refresh', { teams: sortedTeams, phase: 'phase1' });
+}
+
+function emitScoreUpdate(payload = {}) {
+  io.emit('score:update', payload);
+}
+
+function clearPhase1Timer() {
+  if (tournamentState.phase1?.test?.timerInterval) {
+    clearInterval(tournamentState.phase1.test.timerInterval);
+    tournamentState.phase1.test.timerInterval = null;
+  }
+}
+
+function startPhase1Timer(timeLimit = 20) {
+  clearPhase1Timer();
+  const limit = Math.max(5, Number(timeLimit) || 20);
+  tournamentState.phase1.test = {
+    ...(tournamentState.phase1.test || {}),
+    timer: limit,
+    timerMax: limit,
+    timerPaused: false,
+    buzzLocked: false,
+    buzzWinner: null
+  };
+
+  tournamentState.phase1.test.timerInterval = setInterval(() => {
+    const test = tournamentState.phase1.test || {};
+    if (test.timerPaused || test.buzzLocked) return;
+
+    test.timer = Math.max(0, (test.timer || 0) - 1);
+    io.emit('game:timer', {
+      timeLeft: test.timer,
+      timerMax: test.timerMax,
+      questionId: test.currentQuestion?.id || null,
+      phase: 'phase1'
+    });
+
+    if (test.timer <= 0) {
+      clearPhase1Timer();
+      io.emit('game:timer_expired', { phase: 'phase1', questionId: test.currentQuestion?.id || null });
+    }
+  }, 1000);
+}
+
+function stopPhase1TimerOnBuzz({ teamId, teamName, buzzTime, questionId } = {}) {
+  const test = tournamentState.phase1.test || {};
+  if (test.buzzLocked) {
+    return false;
+  }
+
+  clearPhase1Timer();
+  const frozen = Number.isFinite(Number(buzzTime))
+    ? Math.max(0, Number(buzzTime))
+    : Math.max(0, test.timer || 0);
+
+  tournamentState.phase1.test = {
+    ...test,
+    timer: frozen,
+    timerPaused: true,
+    buzzLocked: true,
+    buzzWinner: {
+      teamId: String(teamId || ''),
+      teamName: teamName || 'Équipe',
+      buzzTime: frozen,
+      at: new Date().toISOString()
+    }
+  };
+
+  io.emit('game:timer_stop', {
+    timeLeft: frozen,
+    timerMax: test.timerMax || frozen,
+    questionId: questionId || test.currentQuestion?.id || null,
+    teamId: String(teamId || ''),
+    teamName: teamName || 'Équipe',
+    phase: 'phase1'
+  });
+
+  return true;
+}
+
+function registerPhase1Buzz({ teamId, teamName, questionId, buzzTime, source = 'socket' } = {}) {
+  const id = String(teamId || '');
+  const activeTeam = activeTeams[id];
+  const resolvedName = activeTeam?.name || teamName || id || 'Équipe';
+
+  stopPhase1TimerOnBuzz({
+    teamId: id,
+    teamName: resolvedName,
+    buzzTime,
+    questionId
+  });
+
+  io.to('moderator-session').emit('game:answer_received', {
+    id: Date.now(),
+    teamId: id,
+    teamName: resolvedName,
+    questionId,
+    buzzTime,
+    answer: 'En attente de réponse...',
+    points: 0,
+    source,
+    timestamp: new Date()
+  });
+
+  io.emit('buzz:first', {
+    teamName: resolvedName,
+    teamId: id,
+    avatar: activeTeam?.avatar || '',
+    color: activeTeam?.color || '#17e9ff',
+    tag: activeTeam?.tag || '',
+    buzzTime,
+    time: Date.now()
+  });
 }
 
 function normalizePhase1Category(category) {
-  return PHASE1_CATEGORIES.includes(category) ? category : 'Mixed Challenges';
+  return normalizeBankCategory(category);
 }
 
-async function generatePhase1TestQuestions({ startImmediately = false, category = null, fast = true } = {}) {
+function generatePhase1CategoryBankForTesting(category = 'Mixed Challenges') {
+  ensurePhase1TestingAllowed();
+  const normalizedCategory = normalizePhase1Category(category);
+  const questions = buildCategoryBank(normalizedCategory);
+
+  tournamentState.phase1 = {
+    ...(tournamentState.phase1 || {}),
+    test: {
+      ...(tournamentState.phase1.test || {}),
+      categoryBank: questions,
+      categoryBankCategory: normalizedCategory,
+      categoryBankSource: 'local_competition_bank',
+      lastAction: 'generate_phase1_category_bank',
+      updatedAt: new Date().toISOString()
+    }
+  };
+
+  return {
+    questions,
+    category: normalizedCategory,
+    count: questions.length,
+    source: 'local_competition_bank',
+    snapshot: getTournamentSnapshot()
+  };
+}
+
+async function generatePhase1TestQuestions({ startImmediately = false, category = null, fast = true, shuffle = false } = {}) {
   ensurePhase1TestingAllowed();
 
   const nextRoundNumber = Math.min((tournamentState.phase1.test?.roundNumber || 0) + 1, PHASE1_ROUND_COUNT);
@@ -984,14 +1284,49 @@ async function generatePhase1TestQuestions({ startImmediately = false, category 
       ? selectedCategory
       : category || selectedCategory || tournamentState.phase1.test?.roundCategory || 'Mixed'
   );
-  const generated = fast
-    ? {
-        questions: buildPhase1SimulationQuestions(nextRoundNumber, roundCategory),
-        source: 'local_french_fast',
+  let generated;
+  if (shuffle) {
+    const usedKeys = tournamentState.phase1.test?.usedQuestionKeys || [];
+    const currentKeys = collectPhase1QuestionKeys(tournamentState.phase1.test?.generatedQuestions || []);
+    const excludeKeys = [...new Set([...usedKeys, ...currentKeys])];
+    const questions = await buildFreshCategorySelection(
+      prisma,
+      roundCategory,
+      PHASE1_QUESTIONS_PER_ROUND,
+      excludeKeys
+    );
+    generated = {
+      questions: buildPhase1TestQuestions(questions),
+      source: 'category_bank_fresh',
+      roundNumber: nextRoundNumber,
+      usedQuestionKeys: [...new Set([...excludeKeys, ...collectPhase1QuestionKeys(questions)])].slice(-120)
+    };
+  } else {
+    try {
+      const questions = await buildCategorySelection(
+        prisma,
+        roundCategory,
+        PHASE1_QUESTIONS_PER_ROUND,
+        false,
+        nextRoundNumber
+      );
+      generated = {
+        questions: buildPhase1TestQuestions(questions),
+        source: 'category_bank',
         roundNumber: nextRoundNumber
-      }
-    : await generateQuestionsWithLocalAI(nextRoundNumber, roundCategory);
-  const questions = generated.source === 'cache' || generated.source.startsWith('fallback_') || generated.source === 'local_french_fast'
+      };
+    } catch (error) {
+      console.warn('Phase 1 category bank unavailable, using local seed:', error.message);
+      generated = fast
+        ? {
+            questions: buildPhase1SimulationQuestions(nextRoundNumber, roundCategory, false),
+            source: 'local_seed_bank',
+            roundNumber: nextRoundNumber
+          }
+        : await generateQuestionsWithLocalAI(nextRoundNumber, roundCategory);
+    }
+  }
+  const questions = shouldUseQuestionsDirectly(generated.source)
     ? generated.questions
     : await storeGeneratedQuestions(generated.questions);
   tournamentState.phase = 'phase1';
@@ -1001,6 +1336,8 @@ async function generatePhase1TestQuestions({ startImmediately = false, category 
       ...(tournamentState.phase1.test || {}),
       generatedQuestions: questions,
       generatedQuestionSource: generated.source,
+      roundNumber: nextRoundNumber,
+      usedQuestionKeys: generated.usedQuestionKeys || tournamentState.phase1.test?.usedQuestionKeys || [],
       roundCategory,
       selectedNextCategory: null,
       nextCategoryChoices: [],
@@ -1010,7 +1347,7 @@ async function generatePhase1TestQuestions({ startImmediately = false, category 
       preloadedRoundNumber: nextRoundNumber + 1,
       currentQuestionIndex: startImmediately ? 0 : -1,
       status: startImmediately ? 'live' : 'ready',
-      lastAction: 'generate_test_questions',
+      lastAction: shuffle ? 'shuffle_fresh_questions' : 'generate_test_questions',
       updatedAt: new Date().toISOString()
     }
   };
@@ -1107,10 +1444,10 @@ function broadcastPhase1Question(question) {
     question: question.text,
     category: question.category || 'Qualification',
     points: question.points || 10,
-    type: 'Buzzer',
-    options: [],
-    choices: [],
-    difficulty: question.difficulty || 'Easy',
+    type: question.type || 'MCQ',
+    options: question.options || question.choices || [],
+    choices: question.choices || question.options || [],
+    difficulty: question.difficulty || 'Medium',
     timeLimit: question.timeLimit || 20
   };
 
@@ -1132,6 +1469,14 @@ function broadcastPhase1Question(question) {
     },
     category: payload.category,
     snapshot: getTournamentSnapshot()
+  });
+
+  startPhase1Timer(payload.timeLimit);
+  io.emit('game:timer', {
+    timeLeft: payload.timeLimit,
+    timerMax: payload.timeLimit,
+    questionId: payload.id,
+    phase: 'phase1'
   });
 }
 
@@ -1166,6 +1511,7 @@ function advancePhase1Question() {
 }
 
 function clearPhase1Question(status = 'idle') {
+  clearPhase1Timer();
   tournamentState.phase1.test = {
     ...(tournamentState.phase1.test || {}),
     currentQuestion: null,
@@ -1189,9 +1535,14 @@ function scorePhase1Round({ finish = false } = {}) {
     || tournamentState.phase1.test?.generatedQuestions?.[tournamentState.phase1.test?.currentQuestionIndex || 0]
     || FALLBACK_PHASE1_QUESTIONS[0];
 
-  Object.values(activeTeams).forEach((team, index) => {
-    const answeredCorrectly = index < 4 || Math.random() > 0.42;
-    const gained = answeredCorrectly ? (question.points || 10) : 0;
+  const activeTeamList = Object.values(activeTeams);
+  const winningTeam = activeTeamList.length > 0
+    ? activeTeamList[Math.floor(Math.random() * activeTeamList.length)]
+    : null;
+
+  activeTeamList.forEach((team) => {
+    const answeredCorrectly = winningTeam && team.id === winningTeam.id;
+    const gained = answeredCorrectly ? 10 : 0;
     team.score = (team.score || 0) + gained;
     team.streak = answeredCorrectly ? (team.streak || 0) + 1 : 0;
     team.answerHistory = [
@@ -1329,6 +1680,7 @@ async function finishPhase1ForTesting({ revealOnly = false } = {}) {
   await persistPhaseResults(1, result.rankings, result.qualified, result.eliminated);
   await persistTournamentDevelopmentState();
   broadcastTournamentState('tournament:phase1_complete');
+  schedulePhase2AutoStart();
   return getTournamentSnapshot();
 }
 
@@ -1463,7 +1815,7 @@ async function ensureTournament() {
   try {
     const tournament = await dbTimeout(prisma.tournament.create({
       data: {
-        name: `Crazy Challenge ${new Date().toISOString()}`,
+        name: `ISGA Summit Challenge ${new Date().toISOString()}`,
         status: tournamentState.phase,
         developmentMode: DEVELOPMENT_MODE
       }
@@ -1557,6 +1909,9 @@ function resetPhase2State() {
     roundWinner: null,
     roundStatus: 'idle',
     roundHistorySaved: false,
+    modifier: null,
+    modifierLabel: null,
+    firstCorrectTeamId: null,
     timer: 0,
     timerMax: 0,
     timerInterval: null
@@ -1663,6 +2018,7 @@ async function completePhase1() {
 
   await persistPhaseResults(1, rankings, qualified, eliminated);
   await persistTournamentDevelopmentState();
+  schedulePhase2AutoStart();
   return tournamentState.phase1;
 }
 
@@ -1699,6 +2055,59 @@ function initializePhase2State(qualified, eliminated, scores, source = 'normal')
     scores
   };
   logPhase2Activity('phase2', 'Phase 2 initialisée', { source });
+}
+
+async function startPhase2FromPhase1(source = 'manual') {
+  if (tournamentState.phase2.timerInterval) {
+    clearInterval(tournamentState.phase2.timerInterval);
+    tournamentState.phase2.timerInterval = null;
+  }
+
+  if (tournamentState.phase1.qualified.length === 0) {
+    await completePhase1();
+  }
+
+  const qualified = tournamentState.phase1.qualified.slice(0, 4);
+  const eliminated = tournamentState.phase1.eliminated || [];
+  const scores = qualified.map(team => ({
+    id: String(team.id),
+    name: team.name,
+    tag: team.tag || '',
+    color: team.color || '#17e9ff',
+    avatar: team.avatar || '',
+    score: 0,
+    phase1Score: team.score || 0,
+    status: 'active',
+    streak: 0,
+    penalties: 0,
+    hintsUsed: 0
+  }));
+
+  initializePhase2State(qualified, eliminated, scores, source);
+  tournamentState.phase2.roundStatus = 'ready';
+  tournamentState.phase2.currentChallenge = null;
+  tournamentState.phase2.submissions = [];
+  tournamentState.development.lastAction = source === 'auto_phase1_transition'
+    ? 'auto_start_phase2'
+    : 'start_phase2';
+
+  await persistTournamentDevelopmentState();
+  broadcastTournamentState('tournament:phase2_started');
+  return getTournamentSnapshot();
+}
+
+function schedulePhase2AutoStart() {
+  if (phaseTransitionTimer) {
+    clearTimeout(phaseTransitionTimer);
+  }
+
+  phaseTransitionTimer = setTimeout(() => {
+    phaseTransitionTimer = null;
+    if (tournamentState.phase !== 'phase1_complete') return;
+    startPhase2FromPhase1('auto_phase1_transition').catch((error) => {
+      console.error('Erreur transition automatique Phase 1 -> Phase 2:', error);
+    });
+  }, PHASE1_TO_PHASE2_DELAY_MS);
 }
 
 async function skipToPhase2ForTesting() {
@@ -1873,6 +2282,67 @@ function startPhase2Timer() {
   }, 1000);
 }
 
+async function launchPhase2Round(loadedChallenge, requestedModifier = 'random') {
+  if (!loadedChallenge) {
+    throw new Error('Challenge introuvable');
+  }
+
+  const { modifier, modifierLabel, mysteryResolved } = resolvePhase2Modifier(requestedModifier);
+
+  const aiHint = !loadedChallenge.hint && modifier !== 'no_hint'
+    ? await generateAIHint(loadedChallenge.question, loadedChallenge.answer, loadedChallenge.difficulty)
+    : null;
+
+  const hint = loadedChallenge.hint
+    || aiHint
+    || generateHint(loadedChallenge.question, loadedChallenge.answer, loadedChallenge.difficulty);
+
+  let timeLimit = loadedChallenge.timeLimit || 30;
+  if (modifier === 'sudden_question') {
+    timeLimit = applySuddenQuestionTimer(timeLimit);
+  }
+
+  tournamentState.phase = 'phase2';
+  tournamentState.phase2.active = true;
+  tournamentState.phase2.paused = false;
+  tournamentState.phase2.roundNumber += 1;
+  tournamentState.phase2.modifier = modifier;
+  tournamentState.phase2.modifierLabel = modifierLabel;
+  tournamentState.phase2.modifierRequested = requestedModifier || 'random';
+  tournamentState.phase2.mysteryResolved = mysteryResolved || null;
+  tournamentState.phase2.firstCorrectTeamId = null;
+  tournamentState.phase2.currentChallenge = {
+    ...loadedChallenge,
+    hint
+  };
+  tournamentState.phase2.currentPackId = loadedChallenge.packId || tournamentState.phase2.currentPackId;
+  tournamentState.phase2.currentPackName = loadedChallenge.pack?.name || tournamentState.phase2.currentPackName;
+  tournamentState.phase2.submissions = [];
+  tournamentState.phase2.hintUsage = {};
+  tournamentState.phase2.hintUsageLog = [];
+  tournamentState.phase2.penaltyEvents = [];
+  tournamentState.phase2.hintRevealed = false;
+  tournamentState.phase2.answerRevealed = false;
+  tournamentState.phase2.roundWinner = null;
+  tournamentState.phase2.roundStatus = 'live';
+  tournamentState.phase2.roundHistorySaved = false;
+  tournamentState.phase2.timer = timeLimit;
+  tournamentState.phase2.timerMax = timeLimit;
+
+  logPhase2Activity('challenge', `Round ${tournamentState.phase2.roundNumber} lancé (${modifierLabel || 'Standard'}): ${loadedChallenge.question}`, {
+    challengeId: loadedChallenge.id,
+    packId: loadedChallenge.packId,
+    packName: loadedChallenge.pack?.name || null,
+    modifier,
+    modifierLabel,
+    mysteryResolved: mysteryResolved || null
+  });
+
+  startPhase2Timer();
+  broadcastTournamentState('phase2:challenge_started');
+  return getTournamentSnapshot();
+}
+
 async function persistActiveRoundHistory(status = 'ended', reason = null) {
   const challenge = tournamentState.phase2.currentChallenge;
   if (!challenge || tournamentState.phase2.roundHistorySaved) return;
@@ -1917,6 +2387,37 @@ async function finalizeActivePhase2Round(status, broadcastEvent, reason) {
   broadcastTournamentState(broadcastEvent);
 }
 
+function publicPhase1Snapshot() {
+  const phase1 = tournamentState.phase1 || {};
+  const test = phase1.test;
+  if (!test) return phase1;
+
+  const redactQuestion = (question) => question ? ({
+    id: question.id,
+    text: question.text || question.question,
+    question: question.text || question.question,
+    category: question.category,
+    points: question.points,
+    type: question.type,
+    options: question.options || question.choices || [],
+    choices: question.choices || question.options || [],
+    difficulty: question.difficulty,
+    timeLimit: question.timeLimit,
+    roundNumber: question.roundNumber
+  }) : question;
+
+  return {
+    ...phase1,
+    test: {
+      ...test,
+      generatedQuestions: Array.isArray(test.generatedQuestions)
+        ? test.generatedQuestions.map(redactQuestion)
+        : [],
+      currentQuestion: redactQuestion(test.currentQuestion)
+    }
+  };
+}
+
 function getTournamentSnapshot() {
   const phase2Scores = Object.values(tournamentState.phase2.scores)
     .sort((a, b) => b.score - a.score)
@@ -1925,7 +2426,7 @@ function getTournamentSnapshot() {
   return {
     phase: tournamentState.phase,
     development: tournamentState.development,
-    phase1: tournamentState.phase1,
+    phase1: publicPhase1Snapshot(),
     phase2: {
       active: tournamentState.phase2.active,
       paused: tournamentState.phase2.paused,
@@ -1937,6 +2438,11 @@ function getTournamentSnapshot() {
       qualifiedTeams: tournamentState.phase2.qualifiedTeams,
       eliminatedTeams: tournamentState.phase2.eliminatedTeams,
       scores: phase2Scores,
+      modifier: tournamentState.phase2.modifier,
+      modifierLabel: tournamentState.phase2.modifierLabel,
+      modifierRequested: tournamentState.phase2.modifierRequested || null,
+      mysteryResolved: tournamentState.phase2.mysteryResolved || null,
+      hintsDisabled: tournamentState.phase2.modifier === 'no_hint',
       hintRevealed: tournamentState.phase2.hintRevealed,
       answerRevealed: tournamentState.phase2.answerRevealed,
       roundWinner: tournamentState.phase2.roundWinner,
@@ -1971,6 +2477,11 @@ function isQualifiedForPhase2(teamId) {
 }
 
 async function loadChallenge(challengeId) {
+  const localChallenge = phase2LocalStore.findChallenge(challengeId);
+  if (localChallenge) {
+    return localChallenge;
+  }
+
   const id = Number.parseInt(challengeId, 10);
   if (Number.isNaN(id)) return null;
   return prisma.importedChallenge.findUnique({
@@ -2070,26 +2581,52 @@ socket.on('moderator:send_question', (data) => {
   });
 socket.on('team:buzz', ({ teamId, teamName, questionId, buzzTime, points }) => {
     console.log('Buzz reçu:', { teamId, questionId, buzzTime });
-    io.to('moderator-session').emit('game:answer_received', {
-      id: Date.now(),
-      teamId: teamId || teamName || 'Équipe',
-      questionId,
-      questionText: 'Question en cours',
-      buzzTime,
-      answer: 'En attente...',
-      points: points || 0,
-      timestamp: new Date()
-    });
+    registerPhase1Buzz({ teamId, teamName, questionId, buzzTime, source: 'socket' });
   });
- socket.on('answer:validate', ({ teamId, accepted, points }) => {
-    if (accepted && activeTeams[teamId]) {
-      activeTeams[teamId].score += points;
-      // Notifier l'équipe que son score a changé
-      io.to(activeTeams[teamId].socketId).emit('game:score_update', activeTeams[teamId].score);
+
+  socket.on('answer:validate', ({ teamId, accepted, points }) => {
+    const id = String(teamId || '');
+    const delta = accepted ? Number(points || 10) : 0;
+
+    if (accepted && activeTeams[id]) {
+      activeTeams[id].score = (activeTeams[id].score || 0) + delta;
     }
-  const sortedTeams = Object.values(activeTeams).sort((a, b) => b.score - a.score);
-    io.to('moderator-session').emit('score:refresh', { teams: sortedTeams });
-  io.to('public-room').emit('score:refresh', { teams: sortedTeams });
+
+    const sortedTeams = Object.values(activeTeams)
+      .sort((a, b) => (b.score || 0) - (a.score || 0))
+      .map((team, index) => ({ ...team, rank: index + 1 }));
+
+    tournamentState.phase1 = {
+      ...(tournamentState.phase1 || {}),
+      rankings: sortedTeams
+    };
+
+    const scorePayload = {
+      teamId: id,
+      teamName: activeTeams[id]?.name || id,
+      score: activeTeams[id]?.score || 0,
+      delta: accepted ? delta : 0,
+      accepted: Boolean(accepted),
+      correct: Boolean(accepted),
+      phase: 'phase1',
+      animation: accepted ? 'correct' : 'wrong'
+    };
+
+    if (activeTeams[id]?.socketId) {
+      io.to(activeTeams[id].socketId).emit('game:score_update', activeTeams[id].score);
+    }
+
+    emitScoreUpdate(scorePayload);
+    io.emit('score:refresh', { teams: sortedTeams, phase: 'phase1' });
+
+    if (accepted) {
+      io.emit('game:answer_result', {
+        ...scorePayload,
+        questionId: tournamentState.phase1.test?.currentQuestion?.id || null
+      });
+    }
+
+    broadcastTournamentState('phase1:score_updated');
   });
 
   socket.on('phase1:end', async () => {
@@ -2218,13 +2755,42 @@ socket.on('team:buzz', ({ teamId, teamName, questionId, buzzTime, points }) => {
       const result = await generatePhase1TestQuestions({
         startImmediately: Boolean(payload.startImmediately),
         category: payload.category,
-        fast: payload.fast !== false
+        fast: payload.fast !== false,
+        shuffle: Boolean(payload.shuffle)
       });
-      io.emit('phase1:test_questions_generated', result);
+      io.to('moderator-session').emit('phase1:test_questions_generated', result);
       broadcastTournamentState('phase1:test_state_updated');
     } catch (error) {
       console.error('Erreur generation questions Phase 1:', error);
       socket.emit('phase:error', { error: error.message || 'Erreur generation questions Phase 1' });
+    }
+  });
+
+  socket.on('phase1:test_shuffle_questions', async (payload = {}) => {
+    try {
+      const result = await generatePhase1TestQuestions({
+        startImmediately: false,
+        category: payload.category,
+        fast: payload.fast !== false,
+        shuffle: true
+      });
+      io.to('moderator-session').emit('phase1:test_questions_generated', result);
+      broadcastTournamentState('phase1:test_state_updated');
+    } catch (error) {
+      console.error('Erreur shuffle questions Phase 1:', error);
+      socket.emit('phase:error', { error: error.message || 'Erreur shuffle questions Phase 1' });
+    }
+  });
+
+  socket.on('phase1:test_regenerate_category_bank', async (payload = {}) => {
+    try {
+      const result = await regeneratePhase1CategoryBank(payload.category, payload.targetCount || 50);
+      io.to('moderator-session').emit('phase1:category_bank_regenerated', result);
+      io.to('moderator-session').emit('phase1:test_questions_generated', result);
+      broadcastTournamentState('phase1:test_state_updated');
+    } catch (error) {
+      console.error('Erreur regeneration bank Phase 1:', error);
+      socket.emit('phase:error', { error: error.message || 'Erreur regeneration bank Phase 1' });
     }
   });
 
@@ -2341,95 +2907,30 @@ socket.on('team:buzz', ({ teamId, teamName, questionId, buzzTime, points }) => {
 
   socket.on('phase2:start', async () => {
     try {
-      if (tournamentState.phase1.qualified.length === 0) {
-        await completePhase1();
-      }
-
-      tournamentState.phase = 'phase2';
-      tournamentState.phase2.active = true;
-      tournamentState.phase2.paused = false;
-      tournamentState.phase2.roundNumber = 0;
-      tournamentState.phase2.currentPackId = null;
-      tournamentState.phase2.currentPackName = null;
-      tournamentState.phase2.currentChallenge = null;
-      tournamentState.phase2.submissions = [];
-      tournamentState.phase2.hintUsage = {};
-      tournamentState.phase2.hintUsageLog = [];
-      tournamentState.phase2.penaltyEvents = [];
-      tournamentState.phase2.activityFeed = [];
-      tournamentState.phase2.roundWinner = null;
-      tournamentState.phase2.hintRevealed = false;
-      tournamentState.phase2.answerRevealed = false;
-      tournamentState.phase2.roundStatus = 'ready';
-      tournamentState.phase2.roundHistorySaved = false;
-      tournamentState.phase2.qualifiedTeams = tournamentState.phase1.qualified;
-      tournamentState.phase2.eliminatedTeams = tournamentState.phase1.eliminated;
-      tournamentState.phase2.scores = {};
-
-      tournamentState.phase2.qualifiedTeams.forEach(team => {
-        tournamentState.phase2.scores[String(team.id)] = {
-          id: String(team.id),
-          name: team.name,
-          tag: team.tag || '',
-          color: team.color || '#17e9ff',
-          avatar: team.avatar || '',
-          score: 0,
-          phase1Score: team.score,
-          status: 'active'
-        };
-      });
-
-      logPhase2Activity('phase2', 'Phase 2 démarrée par le modérateur');
-      resetPhase3State();
-      await persistTournamentDevelopmentState();
-      broadcastTournamentState('tournament:phase2_started');
+      const snapshot = await startPhase2FromPhase1('manual_socket');
+      socket.emit('tournament:phase2_started_ack', snapshot);
     } catch (error) {
       console.error('Erreur socket lancement Phase 2:', error);
       socket.emit('phase:error', { error: 'Erreur lancement Phase 2' });
     }
   });
 
-  socket.on('phase2:start_challenge', async ({ challengeId, challenge }) => {
+  socket.on('phase2:start_challenge', async ({ challengeId, challenge, modifier }) => {
     try {
       const loadedChallenge = challenge || await loadChallenge(challengeId);
-      if (!loadedChallenge) return socket.emit('phase:error', { error: 'Challenge introuvable' });
+      if (!loadedChallenge) {
+        return socket.emit('phase:error', { error: 'Challenge introuvable' });
+      }
 
-      tournamentState.phase = 'phase2';
-      tournamentState.phase2.active = true;
-      tournamentState.phase2.paused = false;
-      tournamentState.phase2.roundNumber += 1;
-      tournamentState.phase2.currentChallenge = {
-        ...loadedChallenge,
-        hint: loadedChallenge.hint || generateHint(loadedChallenge.question, loadedChallenge.answer, loadedChallenge.difficulty)
-      };
-      tournamentState.phase2.currentPackId = loadedChallenge.packId || tournamentState.phase2.currentPackId;
-      tournamentState.phase2.currentPackName = loadedChallenge.pack?.name || tournamentState.phase2.currentPackName;
-      tournamentState.phase2.submissions = [];
-      tournamentState.phase2.hintUsage = {};
-      tournamentState.phase2.hintUsageLog = [];
-      tournamentState.phase2.penaltyEvents = [];
-      tournamentState.phase2.hintRevealed = false;
-      tournamentState.phase2.answerRevealed = false;
-      tournamentState.phase2.roundWinner = null;
-      tournamentState.phase2.roundStatus = 'live';
-      tournamentState.phase2.roundHistorySaved = false;
-      tournamentState.phase2.timer = loadedChallenge.timeLimit || 30;
-      tournamentState.phase2.timerMax = loadedChallenge.timeLimit || 30;
-
-      logPhase2Activity('challenge', `Round ${tournamentState.phase2.roundNumber} lancé: ${loadedChallenge.question}`, {
-        challengeId: loadedChallenge.id,
-        packId: loadedChallenge.packId,
-        packName: loadedChallenge.pack?.name || null
-      });
-      startPhase2Timer();
-      broadcastTournamentState('phase2:challenge_started');
+      const snapshot = await launchPhase2Round(loadedChallenge, modifier);
+      socket.emit('phase2:challenge_started_ack', snapshot);
     } catch (error) {
       console.error('Erreur lancement challenge Phase 2:', error);
-      socket.emit('phase:error', { error: 'Erreur lancement challenge' });
+      socket.emit('phase:error', { error: error.message || 'Erreur lancement challenge' });
     }
   });
 
-  socket.on('phase2:submit_answer', async ({ teamId, teamName, answer }) => {
+  socket.on('phase2:submit_answer', async ({ teamId, teamName, answer, wager }) => {
     try {
       const challenge = tournamentState.phase2.currentChallenge;
       const id = String(teamId || '');
@@ -2459,9 +2960,33 @@ socket.on('team:buzz', ({ teamId, teamName, questionId, buzzTime, points }) => {
         };
       }
 
-      const correct = normalizeAnswer(answer) === normalizeAnswer(challenge.answer);
+      const correct = isAnswerCorrect(answer, challenge.answer);
       const usedHint = Boolean(tournamentState.phase2.hintUsage[id]);
       const timestamp = new Date();
+      const modifier = tournamentState.phase2.modifier;
+      const currentScore = tournamentState.phase2.scores[id].score || 0;
+      const isFirstCorrect = correct && !tournamentState.phase2.firstCorrectTeamId;
+
+      const earned = correct
+        ? calculatePhase2Earned({
+          modifier,
+          usedHint,
+          isFirstCorrect,
+          wager,
+          currentScore
+        })
+        : 0;
+
+      const penalty = correct
+        ? 0
+        : calculatePhase2Penalty({
+          modifier,
+          wager,
+          currentScore,
+          challengePenalty: challenge.penalty,
+          difficulty: challenge.difficulty
+        });
+
       const submission = {
         id: Date.now(),
         teamId: id,
@@ -2469,25 +2994,31 @@ socket.on('team:buzz', ({ teamId, teamName, questionId, buzzTime, points }) => {
         answer,
         correct,
         usedHint,
+        modifier,
+        modifierLabel: tournamentState.phase2.modifierLabel,
         timestamp: timestamp.toISOString()
       };
 
       if (correct) {
-        const earned = Math.max(0, (challenge.points || 10) - (usedHint ? 2 : 0));
-        tournamentState.phase2.scores[id].score += earned;
+        tournamentState.phase2.scores[id].score = currentScore + earned;
         submission.points = earned;
+        if (isFirstCorrect) {
+          tournamentState.phase2.firstCorrectTeamId = id;
+        }
         tournamentState.phase2.roundWinner = {
           teamId: id,
           teamName: submission.teamName,
           points: earned,
-          usedHint
+          usedHint,
+          modifier
         };
         tournamentState.phase2.roundStatus = 'won';
-        logPhase2Activity('submission', `${submission.teamName} gagne le round ${tournamentState.phase2.roundNumber}`, {
+        logPhase2Activity('submission', `${submission.teamName} gagne le round ${tournamentState.phase2.roundNumber} (${modifier || 'normal'})`, {
           teamId: id,
           teamName: submission.teamName,
           points: earned,
-          usedHint
+          usedHint,
+          modifier
         });
 
         if (tournamentState.phase2.timerInterval) {
@@ -2511,7 +3042,6 @@ socket.on('team:buzz', ({ teamId, teamName, questionId, buzzTime, points }) => {
           console.warn('Round history persistence unavailable:', error.message);
         }
       } else {
-        const penalty = challenge.penalty || -1;
         tournamentState.phase2.scores[id].score += penalty;
         tournamentState.phase2.scores[id].penalties = (tournamentState.phase2.scores[id].penalties || 0) + 1;
         submission.penalty = penalty;
@@ -2524,10 +3054,11 @@ socket.on('team:buzz', ({ teamId, teamName, questionId, buzzTime, points }) => {
           roundNumber: tournamentState.phase2.roundNumber,
           timestamp: submission.timestamp
         });
-        logPhase2Activity('penalty', `${submission.teamName} reçoit ${penalty} points de pénalité`, {
+        logPhase2Activity('penalty', `${submission.teamName} reçoit ${penalty} points de pénalité (${modifier || 'normal'})`, {
           teamId: id,
           teamName: submission.teamName,
-          penalty
+          penalty,
+          modifier
         });
 
         try {
@@ -2537,7 +3068,7 @@ socket.on('team:buzz', ({ teamId, teamName, questionId, buzzTime, points }) => {
               teamName: submission.teamName,
               challengeId: toDbTeamId(challenge.id),
               penalty,
-              reason: 'Wrong answer'
+              reason: `Wrong answer under ${modifier || 'normal'} modifier`
             }
           });
         } catch (error) {
@@ -2547,23 +3078,25 @@ socket.on('team:buzz', ({ teamId, teamName, questionId, buzzTime, points }) => {
 
       tournamentState.phase2.submissions.push(submission);
       socket.emit('phase2:submission_result', submission);
-      broadcastTournamentState(correct ? 'phase2:round_winner' : 'phase2:submission_update');
+      emitPhase2ScoreUpdate(id, submission);
     } catch (error) {
       console.error('Erreur soumission Phase 2:', error);
       socket.emit('phase:error', { error: 'Erreur soumission Phase 2' });
     }
   });
-
   socket.on('phase2:request_hint', async ({ teamId, teamName }) => {
     try {
       const challenge = tournamentState.phase2.currentChallenge;
       const id = String(teamId || '');
 
       if (!challenge || !isQualifiedForPhase2(id)) return;
+      if (tournamentState.phase2.modifier === 'no_hint') {
+        return socket.emit('phase2:hint', { hint: null, disabled: true, rewardPenalty: 0, correctPoints: 8 });
+      }
 
       const hint = challenge.hint || generateHint(challenge.question, challenge.answer, challenge.difficulty);
       if (tournamentState.phase2.hintUsage[id]) {
-        return socket.emit('phase2:hint', { hint, rewardPenalty: 2 });
+        return socket.emit('phase2:hint', { hint, rewardPenalty: 0, correctPoints: 8 });
       }
 
       tournamentState.phase2.hintUsage[id] = true;
@@ -2604,7 +3137,7 @@ socket.on('team:buzz', ({ teamId, teamName, questionId, buzzTime, points }) => {
         console.warn('Hint persistence unavailable:', error.message);
       }
 
-      socket.emit('phase2:hint', { hint, rewardPenalty: 2 });
+      socket.emit('phase2:hint', { hint, rewardPenalty: 0, correctPoints: 8 });
       broadcastTournamentState('phase2:hint_usage_update');
     } catch (error) {
       console.error('Erreur indice Phase 2:', error);
